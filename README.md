@@ -1,5 +1,7 @@
 # MnemBound: Fragment-Faithful, Event-False Recall in Multi-Tenant Agent Memory
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23617448.svg)](https://doi.org/10.5281/zenodo.23617448)
+
 Artifact of the ACSAC 2026 paper by Aditya Jain, Anmol Pandey (University of Warwick) and Liang Chen (University of Hertfordshire).
 
 A multi-tenant agent can combine authorized fragments from different tenants into one recalled event that never happened. MnemBound measures this failure on a synthetic SOC corpus with construction-time ground truth. The repository holds the benchmark generator, the 14,400 responses of the two models analysed in the paper together with their corpora and probes, the scripts that compute every number, table and figure of the paper from these data, the BCESV post-hoc verifier, and the paper itself. Reproducing the results needs no GPU.
@@ -114,4 +116,4 @@ The generation procedure and its configuration are in `mnembound/mnembound_pkg/r
 
 ## Citation and license
 
-[CITATION.cff](CITATION.cff) gives the citation. Code and data are released under the Apache License 2.0 ([LICENSE](LICENSE)). [CHANGELOG.md](CHANGELOG.md) lists the changes since the version reviewed for the paper.
+[CITATION.cff](CITATION.cff) gives the citation; the archived copy of this repository has the DOI [10.5281/zenodo.23617448](https://doi.org/10.5281/zenodo.23617448). Code and data are released under the Apache License 2.0 ([LICENSE](LICENSE)). [CHANGELOG.md](CHANGELOG.md) lists the changes since the version reviewed for the paper.

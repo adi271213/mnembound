@@ -384,7 +384,7 @@ MnemBound is implemented in Python as twelve modules with 137 unit tests. The ag
 
 We ran all live-model evaluations on a single NVIDIA H100 SXM 80GB instance under FP8 inference via CUTLASS block-scaled kernels (we disable vLLM's DeepGEMM kernel to work around an FP8 numerical bug; see artifact README).
 
-The full software artifact, response JSONL files, and analysis scripts are available at \url{https://github.com/adi271213/mnembound} and reproducible from saved JSONL without GPU access. \path{analysis/rescore_final_ci.py} regenerates the headline Table~\ref{tab:headline} from saved responses, and the repository README maps every other table, figure, and derived number to the script that produces it.
+The full software artifact, response JSONL files, and analysis scripts are available at \url{https://github.com/adi271213/mnembound}, archived at \url{https://doi.org/10.5281/zenodo.23617448}, and reproducible from saved JSONL without GPU access. \path{analysis/rescore_final_ci.py} regenerates the headline Table~\ref{tab:headline} from saved responses, and the repository README maps every other table, figure, and derived number to the script that produces it.
 
 % ====================================================================
 \section{Empirical Results}\label{sec:results}

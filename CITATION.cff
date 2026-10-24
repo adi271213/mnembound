@@ -12,6 +12,7 @@ authors:
   - given-names: Liang
     family-names: Chen
     affiliation: University of Hertfordshire
+doi: "10.5281/zenodo.23617448"
 repository-code: "https://github.com/adi271213/mnembound"
 license: Apache-2.0
 version: "1.0.0"
