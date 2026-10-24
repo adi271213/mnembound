@@ -1,47 +1,25 @@
 """
-mnembound.retrieval — Retrieval and aggregation rungs.
+mnembound.retrieval — the four retrieval rungs.
 
-The paper evaluates four memory-sharing rungs that increase the risk of
-event-level provenance failure:
+1. ISOLATED                  — the probe's fragments of the querying tenant
+2. BOUNDARY_PRESERVING_TOPK  — the probe's fragments in the querying tenant's
+                               boundary; at tenant granularity the same set
+                               as ISOLATED
+3. SHARED_VECTOR_INDEX       — all of the probe's fragments, across tenants
+4. SUMMARY_MERGE             — all of the probe's fragments, which the prompt
+                               builder renders as a merged summary
+                               (render_summary_text)
 
-1. ISOLATED                      — per-tenant memory; no cross-tenant fragments
-2. BOUNDARY_PRESERVING_TOPK      — shared index but boundary-filtered retrieval
-3. SHARED_VECTOR_INDEX           — single shared index; top-k by similarity
-4. SUMMARY_MERGE                 — per-tenant summaries merged into agent context
+Every rung filters the evidence set attached to the probe at construction
+time, so the construction-time labels stay exact; no rung queries an index.
+retrieve(rung, probe, corpus) returns a `RetrievalResult` with the rung
+(`rung`), the fragments the agent sees (`fragments`), the querying tenant
+(`querying_tenant`) and the fragments the rung left out
+(`excluded_fragments`). analysis/exposure_check.py measures what BM25 and
+MiniLM retrieval over the whole fragment store returns.
 
-Each rung is implemented as a callable that takes a Probe and a Corpus and
-returns a `RetrievalResult`. The result carries:
-- `fragments`: the fragments the agent will see (the retrieval set)
-- `context_text`: a rendered text bundle for prompting (used only by
-  summary_merge, which produces a unified summary)
-- `rung_name`: identifies the rung for logging and scoring
-
-Strict vs dynamic retrieval
----------------------------
-Two retrieval modes are exposed:
-
-- STRICT (default): the rung filters the probe's pre-attached fragments
-  according to its sharing semantics. This is what the §7 deterministic
-  sweep uses, because it preserves the construction-time ground truth
-  labels exactly. ISOLATED and BOUNDARY_PRESERVING_TOPK can hide
-  cross-tenant fragments; SHARED_VECTOR_INDEX returns all fragments;
-  SUMMARY_MERGE concatenates them into context_text.
-
-- DYNAMIC (Day 7+, scaffolded but not implemented): the rung issues the
-  probe's `query` against a corpus index and returns top-k. This is what
-  the §9 bounded LLM run uses. Real embedding-based dynamic retrieval is left as future work; the current rungs use
-  retrieval indexes (BM25, sentence-embedding). For now, all rungs
-  operate in strict mode.
-
-Tenant context
---------------
-Every probe must declare a "querying tenant" — the tenant on whose
-behalf the agent is running. For SUPPORTED/ABSENT/PARTIAL probes this is
-unambiguous (the tenant of the underlying record). For CROSS_BOUNDARY
-traps the querying tenant is the tenant of the probe's *recall* —
-specifically, the tenant of whichever source event contributed the
-subject. This is documented in the rung implementations and verified by
-test.
+The querying tenant is the tenant on whose behalf the agent runs; see
+querying_tenant_for.
 """
 
 from __future__ import annotations
@@ -51,7 +29,6 @@ from enum import Enum
 from typing import Callable
 
 from mnembound.schema import (
-    ALL_ROLES,
     ComponentRole,
     Corpus,
     Fragment,
@@ -86,13 +63,13 @@ class RetrievalResult:
         rung: which rung produced this result
         fragments: the fragments the agent sees (post-filtering)
         querying_tenant: the tenant on whose behalf the agent is querying
-        context_text: optional unified text for SUMMARY_MERGE; empty for
-            the other rungs (they expose individual fragments).
-        excluded_fragments: fragments that WERE in the probe's pre-attached
-            set but were filtered out by the rung. For ISOLATED, these are
-            the cross-tenant fragments. For BOUNDARY_PRESERVING_TOPK, the
-            cross-boundary ones. SHARED_VECTOR_INDEX and SUMMARY_MERGE
-            exclude nothing. Useful for logging and ablation analysis.
+        context_text: empty for every rung; the summary-merge text is
+            rendered when the prompt is built (render_summary_text).
+        excluded_fragments: fragments of the probe's evidence set that the
+            rung filtered out. For ISOLATED, these are the cross-tenant
+            fragments. For BOUNDARY_PRESERVING_TOPK, the cross-boundary
+            ones. SHARED_VECTOR_INDEX and SUMMARY_MERGE exclude nothing.
+            summarize_rung reports their average number.
     """
 
     rung: Rung
@@ -109,19 +86,19 @@ def querying_tenant_for(probe: Probe) -> str:
     """
     Determine which tenant is querying for this probe.
 
-    For SUPPORTED/PARTIAL: the tenant of the underlying record. We recover
-    this from the supporting fragments' tenant_id (which is consistent for
-    these probe types).
+    For SUPPORTED: the tenant of the probe's event, found through
+    boundary_event_pairs. For PARTIAL (whose boundary_event_pairs is
+    empty): the tenant of the first fragment, one of the event's own
+    fragments, which precede the distractors.
 
-    For ABSENT: the tenant of the base record from which the recall was
-    derived. We recover this from the subject fragment's value if any
-    fragment has matching role.subject and value == recall.subject —
-    otherwise we fall back to the first retrieved fragment's tenant.
+    For ABSENT: the tenant of a fragment that carries the recall's subject
+    in the subject role, if the evidence set holds one; otherwise the
+    tenant with the most fragments in the evidence set (the first such
+    tenant on a tie).
 
-    For CROSS_BOUNDARY: the tenant of the source event that contributed
-    the subject component. This is the agent's "context" tenant; the
-    other source events' tenants are the ones the cross-boundary trap
-    inappropriately pulls in.
+    For CROSS_BOUNDARY: the tenant of the fragment that supplies the
+    subject component. The other fragments' tenants are the ones the trap
+    pulls in.
 
     The resolution is deterministic given a probe.
     """
@@ -131,42 +108,32 @@ def querying_tenant_for(probe: Probe) -> str:
             "querying tenant"
         )
 
-    # For SUPPORTED/PARTIAL, all fragments share a tenant.
     if probe.probe_type in (ProbeType.SUPPORTED, ProbeType.PARTIAL):
-        tenants = {f.tenant_id for f in probe.fragments}
-        # SUPPORTED with distractors may have multiple tenants among
-        # distractors; the canonical querying tenant is the underlying
-        # event's tenant. We recover it by finding the fragment whose
-        # (boundary, event) pair appears in probe.boundary_event_pairs.
+        # Distractors may come from other tenants, so the event's tenant is
+        # found through its (boundary, event) pair when the probe has one.
         if probe.boundary_event_pairs:
-            # The underlying event's (boundary, event) is in the set.
             target_pair = next(iter(probe.boundary_event_pairs))
             for f in probe.fragments:
                 if (f.boundary_id, f.event_id) == target_pair:
                     return f.tenant_id
-        # Fallback: first fragment's tenant.
         return probe.fragments[0].tenant_id
 
-    # For CROSS_BOUNDARY, the subject fragment's tenant is the querying
-    # tenant by convention. This matches the paper's framing: an agent
-    # asks "what happened with subject X?" from the tenant where X lives.
+    # For CROSS_BOUNDARY, the querying tenant is the subject fragment's
+    # tenant: the agent asks "what happened with subject X?" from the
+    # tenant where X lives.
     if probe.probe_type == ProbeType.CROSS_BOUNDARY:
         for f in probe.fragments:
             if f.role == ComponentRole.SUBJECT:
                 return f.tenant_id
         return probe.fragments[0].tenant_id
 
-    # For ABSENT, find the fragment whose value matches the recall's
-    # subject (this is the base-record fragment from which the recall was
-    # derived). If none match (subject was the swapped component), fall
-    # back to the first fragment.
+    # For ABSENT, the evidence set comes from other records than the
+    # recall's: a fragment that carries the recall's subject decides if
+    # there is one, otherwise the tenant with the most fragments.
     if probe.probe_type == ProbeType.ABSENT:
         for f in probe.fragments:
             if f.role == ComponentRole.SUBJECT and f.value == probe.recall.subject:
                 return f.tenant_id
-        # The subject was the swapped component, so no fragment carries
-        # it. Pick the tenant that contributes the most non-subject
-        # fragments (the base record's tenant).
         tenant_counts: dict[str, int] = {}
         for f in probe.fragments:
             tenant_counts[f.tenant_id] = tenant_counts.get(f.tenant_id, 0) + 1
@@ -175,7 +142,7 @@ def querying_tenant_for(probe: Probe) -> str:
     raise ValueError(f"unknown probe type: {probe.probe_type}")
 
 
-# ----- Rung implementations (strict mode) -----
+# ----- Rung implementations -----
 
 
 def retrieve_isolated(probe: Probe, corpus: Corpus) -> RetrievalResult:
@@ -208,15 +175,15 @@ def retrieve_boundary_preserving_topk(
     probe: Probe, corpus: Corpus
 ) -> RetrievalResult:
     """
-    BOUNDARY_PRESERVING_TOPK rung: shared index, but retrieval is
-    filtered to the querying tenant's boundary.
+    BOUNDARY_PRESERVING_TOPK rung: the probe's fragments in the querying
+    tenant's boundary.
 
     Under TENANT boundary granularity, this is equivalent to ISOLATED
     (one boundary per tenant). Under ENGAGEMENT or EVENT granularity,
-    this is stricter: only fragments from the SAME boundary as the
-    querying tenant's "current" boundary are visible. For now we
-    interpret "current boundary" as the boundary of the subject fragment
-    (or the first fragment if no subject is present).
+    this is stricter: only fragments of the querying boundary are
+    visible, which is the boundary of the querying tenant's subject
+    fragment, else of the querying tenant's first fragment, else of the
+    probe's first fragment.
     """
     tenant = querying_tenant_for(probe)
     # Determine the querying boundary: the boundary of the subject
@@ -253,15 +220,9 @@ def retrieve_shared_vector_index(
     probe: Probe, corpus: Corpus
 ) -> RetrievalResult:
     """
-    SHARED_VECTOR_INDEX rung: all fragments are visible regardless of
-    tenant or boundary.
-
-    In strict mode, this returns the probe's pre-attached fragments
-    unchanged. In dynamic mode (Day 7+), this will execute a top-k
-    similarity search against the corpus index.
-
-    This is the rung where cross-boundary traps fire: the agent receives
-    fragments from multiple tenants and composes them.
+    SHARED_VECTOR_INDEX rung: the probe's evidence set unchanged,
+    regardless of tenant or boundary. On a trap, the agent receives
+    fragments of several tenants.
     """
     tenant = querying_tenant_for(probe)
     return RetrievalResult(
@@ -273,24 +234,19 @@ def retrieve_shared_vector_index(
 
 def retrieve_summary_merge(probe: Probe, corpus: Corpus) -> RetrievalResult:
     """
-    SUMMARY_MERGE rung: per-tenant summaries are concatenated into a
-    unified context.
+    SUMMARY_MERGE rung: every fragment of the probe's evidence set, which
+    the agent receives as a merged summary.
 
-    All retrieved fragments are kept; the agent will receive them as a
-    merged summary at prompt-construction time. We deliberately do NOT
-    populate context_text here, because doing so would force a choice
-    of tenant_visible vs tenant_hidden at retrieval time and could leak
-    tenant-revealing text into downstream logs. The prompt builder calls
-    `render_summary_text(probe, tenant_visible=...)` at the point of use,
-    which makes the visibility choice explicit and local.
+    context_text is left empty, because rendering here would force a
+    choice of tenant_visible vs tenant_hidden at retrieval time and could
+    leak tenant-revealing text into downstream logs. The prompt builder
+    calls `render_summary_text(probe, tenant_visible=...)` at the point of
+    use, which makes the visibility choice explicit and local. The summary
+    shows no provenance handles, so the agent cannot point at a source
+    fragment.
 
-    Why this is the highest-risk rung: the agent loses per-fragment
-    provenance entirely. There is no way to point at a specific source
-    fragment; the agent must produce a recall from a soup of tenant-
-    mixed text. Cross-boundary recall is structurally encouraged.
-
-    The `fragments` field is populated (with all retrieved fragments) so
-    scoring predicates can run; the prompt rendering happens later.
+    The `fragments` field holds every fragment, so scoring predicates can
+    run.
     """
     tenant = querying_tenant_for(probe)
 
@@ -306,20 +262,15 @@ class SummaryMergeMode(str, Enum):
     """
     How the summary_merge rung renders its evidence text.
 
-    PER_CLIENT_BLOCKS: groups fragments by their source tenant and renders
-        one "Summary of recent activity for this client:" block per tenant.
-        Even in tenant-hidden mode, the multi-block structure signals to the
-        agent that the evidence comes from distinct accounts, which can
-        suppress cross-boundary composition. This is the "safer aggregator"
-        version.
+    PER_CLIENT_BLOCKS: one block per tenant, in tenant order, headed
+        "Summary of recent activity for this client:" and listing the
+        tenant's fragments sorted by role name. The prompt labels the
+        evidence "Evidence summary by client".
 
-    COLLAPSED: dumps every retrieved fragment's text into a single bulleted
-        list with no per-tenant grouping ("Merged memory summary:\\n- ...").
-        This is the closest analogue to a real aggregator that has merged
-        evidence into a single context window. Recommended for the headline
-        summary_merge condition in the paper.
-
-    Default in the paper headline: COLLAPSED.
+    COLLAPSED: one bullet list of every fragment's text, sorted by tenant
+        and role name, without tenant headers. The prompt labels the
+        evidence "Merged memory summary". The paper's headline conditions
+        use it.
     """
 
     PER_CLIENT_BLOCKS = "per_client_blocks"
@@ -346,8 +297,8 @@ def render_summary_text(
         return f.text if tenant_visible else f.sanitized_text
 
     if mode == SummaryMergeMode.COLLAPSED:
-        # Single flat bullet list. Sort by (tenant, role) for determinism
-        # but expose no per-tenant grouping in the output.
+        # One bullet list, sorted by tenant and role name, without tenant
+        # headers.
         sorted_frags = sorted(
             probe.fragments,
             key=lambda f: (f.tenant_id, f.role.value),
@@ -402,6 +353,15 @@ class RungSummary:
     retention_by_probe_type: dict[str, float]
 
 
+def _sum_left_to_right(values: list[float]) -> float:
+    # sum() of floats is compensated from Python 3.12 on; plain addition keeps
+    # the released rung_stats.jsonl reproducible on every Python version.
+    total = 0.0
+    for v in values:
+        total += v
+    return total
+
+
 def summarize_rung(
     rung: Rung, probes: list[Probe], corpus: Corpus
 ) -> RungSummary:
@@ -433,6 +393,6 @@ def summarize_rung(
         avg_fragments_retrieved=total_retrieved / len(probes),
         avg_fragments_excluded=total_excluded / len(probes),
         retention_by_probe_type={
-            t: sum(v) / len(v) for t, v in retained_by_type.items()
+            t: _sum_left_to_right(v) / len(v) for t, v in retained_by_type.items()
         },
     )

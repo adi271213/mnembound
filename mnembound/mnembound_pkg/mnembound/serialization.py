@@ -1,58 +1,55 @@
 """
-mnembound.serialization — JSONL export and import for artifacts.
+mnembound.serialization — JSON and JSONL writers, and a JSONL reader.
 
-Each component of the experiment is written to its own JSONL file. The
-canonical layout:
+write_experiment_artifacts, which run_smoke.py uses, writes one run to a
+folder:
 
     corpus.json                   -- Metadata only (seed, salt, counts)
     records.jsonl                 -- One Record per line (no fragments)
     fragments.tenant_visible.jsonl
-    fragments.tenant_hidden.jsonl -- View bundles for V_frag baselines
+    fragments.tenant_hidden.jsonl -- Fragment-level views
     fragments.store.jsonl         -- Full fragment data with hidden metadata
-                                     (BCESV / scoring only; NEVER hand to a
-                                     V_frag baseline)
+                                     (store side only; NEVER hand to a
+                                     fragment-level verifier)
     probes.jsonl                  -- One Probe per line with construction labels
     responses.jsonl               -- One RecallResponse per line
     metrics.json                  -- MetricSummary JSON
     rung_stats.jsonl              -- Per-rung RungSummary, one per line
 
-Imports
--------
-Each export has a corresponding load_* function so the artifact can be
-re-hydrated for re-scoring or replay. Loading does NOT reconstruct the
-ProvenanceResolver or entity sanitizer (those are corpus-internal); for
-that, regenerate the corpus from its seed.
+A released data/<condition>/ folder holds corpus.json, probes.jsonl,
+responses.jsonl, rung_stats.jsonl and a fragments.store.jsonl without the
+raw value, raw text and record id of each fragment (run_paper.STORE_FIELDS),
+plus the corpus_stats.json of analysis/corpus_stats.py.
+
+read_jsonl reads any of these files back as dicts. The ProvenanceResolver
+and the entity sanitizer are not written; regenerate the corpus from its
+seed to recover them.
 
 Privacy note
 ------------
 Calling `write_fragments_tenant_hidden_jsonl` is the safe way to hand
-fragment data to a V_frag baseline. The file contains ONLY
-{role, value, text, provenance} per line — same as
-FragmentViewBundle.fragments. The hidden-metadata `fragments.store.jsonl`
-must NEVER be given to a V_frag baseline; it contains tenant_id,
+fragment data to a fragment-level verifier. The file contains ONLY
+{role, value, text, provenance} per line, as FragmentViewBundle.fragments
+does. The hidden-metadata `fragments.store.jsonl` contains tenant_id,
 boundary_id, event_id, etc.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 from mnembound.export import (
-    FORBIDDEN_KEYS_IN_FRAGMENT_VIEW,
     assert_fragment_view_is_clean,
     export_fragment_view,
 )
 from mnembound.retrieval import RungSummary
 from mnembound.schema import (
     ALL_ROLES,
-    ComponentRole,
     Corpus,
     Fragment,
     Probe,
-    ProbeType,
     Recall,
     Record,
 )
@@ -187,11 +184,10 @@ def fragment_to_store_dict(f: Fragment) -> dict[str, Any]:
 
 def write_fragments_store_jsonl(corpus: Corpus, path: str | Path) -> int:
     """
-    Write per-fragment FULL data (store-level). Used by scoring/validation.
+    Write per-fragment FULL data (store-level).
 
     Privacy: this file contains tenant_id, boundary_id, event_id and
-    other hidden metadata. Never give it to a V_frag baseline; that
-    would invalidate the §7 audit-invisibility result.
+    other hidden metadata. Never give it to a fragment-level verifier.
     """
     n = 0
     with Path(path).open("w") as fh:
@@ -259,10 +255,10 @@ def response_to_dict(response: RecallResponse) -> dict[str, Any]:
 
     Includes:
     - probe_id, probe_type, abstained, recall, fragment_provenance_ids
-    - value_view (CRITICAL: without this, re-loaded responses default to
-      TENANT_VISIBLE and silently score wrong if originally tenant-hidden)
+    - value_view (always written: without it, re-loaded responses would
+      default to TENANT_VISIBLE and tenant-hidden ones would score wrongly)
     - rung, model, seed, tenant_visible (experiment metadata)
-    - raw_text, parse_error, abstain_reason (debugging fields)
+    - raw_text (the model output), parse_error and abstain_reason
 
     Optional metadata fields are omitted from the output when None to keep
     the JSONL compact, EXCEPT value_view which is always serialized — it
@@ -403,7 +399,7 @@ def write_experiment_artifacts(
         metrics.json
         rung_stats.jsonl
 
-    Returns a dict of {artifact_name -> absolute_path}.
+    Returns a dict of {artifact_name -> path}, each path under out_dir.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

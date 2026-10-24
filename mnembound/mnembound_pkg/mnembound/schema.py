@@ -1,21 +1,20 @@
 """
 mnembound.schema — Data structures for SOC records, fragments, and probes.
 
-These dataclasses mirror the formal model from sections 3 and 4 of the paper:
+A record of a corpus is the tuple
 
     m = (client_id, boundary_id, event_id, subject, action, object_, outcome, time, provenance)
 
 A `Record` is a full SOC event with all components. A `Fragment` is one
 component of a record exposed at retrieval time; the per-component grain
-matches the proof construction in §4.3.
+matches the proof construction of the separation result.
 
-- PUBLIC_HANDLE_HEX_LEN raised from 16 to 24 (96-bit) so reviewers do not
-  flag truncated-SHA-256 concerns.
+- PUBLIC_HANDLE_HEX_LEN is 24 hex characters (96 bits) of SHA-256, so
+  collisions between public handles are negligible.
 - Fragment stores BOTH tenant-visible and tenant-hidden (sanitized) forms
   of `value` and `text`. The view_for_v_frag() method takes a
-  `tenant_visible` parameter (default True). When False, the view exposes
-  the sanitized forms, matching the §4.4 baseline-fairness setup.
-- ProvenanceResolver is unchanged.
+  keyword-only `tenant_visible` parameter with no default. When False, the
+  view exposes the sanitized forms.
 """
 
 from __future__ import annotations
@@ -47,16 +46,16 @@ ALL_ROLES: tuple[ComponentRole, ...] = (
 
 
 # Length (hex characters) of the public opaque provenance ID.
-# 24 hex chars = 96 bits of entropy. At 250k fragments, the birthday-bound
-# collision probability is ~10^-18; we also run an explicit collision check
-# in the generator.
+# 24 hex chars = 96 bits. For the 25,000 fragments of a released corpus, the
+# birthday bound on a collision is about 4e-21; the generator also checks for
+# collisions explicitly.
 PUBLIC_HANDLE_HEX_LEN = 24
 
 
 @dataclass(frozen=True)
 class ProvenanceHandle:
     """
-    Opaque authenticity and retrieval-membership evidence (§4.2).
+    Opaque authenticity and retrieval-membership evidence.
 
     The HIDDEN form carries (record_id, fragment_index) for internal use by
     the generator and by store-level verifiers via ProvenanceResolver. The
@@ -77,14 +76,13 @@ class ProvenanceHandle:
 @dataclass(frozen=True)
 class ProvenanceResolver:
     """
-    Resolves opaque public provenance IDs back to records.
+    Resolves opaque public provenance IDs back to (record_id, fragment
+    index).
 
-    Granted only to store-level verifiers (BCESV-Exact, BCESV-Reconstruct,
-    and the tenant-visible source-set entailment baseline per §4.4). NEVER
-    passed to V_frag baselines.
-
-    Possession of a ProvenanceResolver moves a verifier outside the
-    fragment-level abstraction.
+    It belongs to the store: the fragment-level view (view_for_v_frag)
+    never includes it, and a verifier that holds it is outside the
+    fragment-level abstraction. The verifiers in bcesv/ read
+    fragments.store.jsonl instead.
     """
 
     salt: str
@@ -115,8 +113,8 @@ class Record:
     Invariants enforced by the generator:
     - (boundary_id, event_id) is unique across the entire corpus.
     - boundary_id is in the per-tenant disjoint namespace for client_id.
-    - All five component values are drawn from the per-tenant entity pools
-      (Day 2). Day 3 introduces explicit bridge entities tracked separately.
+    - subject and object_ come from the tenant's entity pool, or from the
+      bridge pools when the record carries a slot bridge (bridges.py).
     """
 
     record_id: str
@@ -167,13 +165,10 @@ class Fragment:
 
     - **tenant-visible**:    `value` and `text` carry the original entity
                              strings (e.g., 'host:web001-A.clientA.local').
-                             Used in the §7 tenant-visible source-set
-                             entailment baseline and for store-level
-                             verifiers.
     - **tenant-hidden**:     `sanitized_value` and `sanitized_text` are the
                              entity-type-preserving but tenant-identity-
-                             stripped forms (e.g., 'host:h_a8f3c12b'). Used
-                             in the §7 default tenant-hidden baselines.
+                             stripped forms (e.g., 'host:h_a8f3c12b'). The
+                             released runs showed the agent these forms.
 
     view_for_v_frag(tenant_visible=...) returns the appropriate view. In
     both views, the provenance field is the opaque public_provenance_id,
@@ -214,22 +209,19 @@ class Fragment:
 
     def view_for_v_frag(self, *, tenant_visible: bool) -> dict[str, Any]:
         """
-        Return the fragment-level view (§4.2).
+        Return the fragment-level view.
 
         The `tenant_visible` argument is keyword-only and has NO default.
-        This is deliberate: forgetting to specify tenant visibility is a
-        common bug that silently corrupts the audit-invisibility result by
-        leaking tenant identity into baselines that should not see it.
+        This is deliberate: a default would let a caller that forgets the
+        choice leak tenant identity into a view that should hide it.
         Callers MUST choose explicitly.
 
         When tenant_visible=True, value and text carry the original entity
-        strings, which contain tenant identity lexically. Use this view for
-        the §7 tenant-visible source-set entailment baseline.
+        strings, which contain tenant identity lexically.
 
         When tenant_visible=False, value and text are sanitized: entity
         strings are replaced with tenant-hidden opaque tokens that preserve
-        entity type. Use this view for the §7 tenant-hidden baselines, which
-        are the common deployment surface.
+        entity type.
 
         In BOTH modes, the view contains exactly
         {role, value, text, provenance} and never includes tenant_id,
@@ -278,7 +270,7 @@ class Recall:
 
 
 class ProbeType(str, Enum):
-    """The four probe types in the MnemBound taxonomy (paper §9)."""
+    """The four probe types in the MnemBound taxonomy."""
 
     SUPPORTED = "supported"
     ABSENT = "absent"
@@ -300,19 +292,19 @@ class Probe:
 
     boundary_event_pairs: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
-    # Bridge entities shared across the supporting fragments' source events.
-    # Empty for SUPPORTED/ABSENT/PARTIAL probes. For CROSS_BOUNDARY traps,
-    # populated when the probe was generated with prefer_bridge_linked=True
-    # AND the trap's source events shared a bridge entity. Used for realism
-    # scoring (§5 of the paper): bridge-linked traps are SOC-plausible
-    # confusion patterns, while pure-random traps are formal-only.
+    # Bridge entities carried by two or more of the trap's source records
+    # (in Record.extra['bridge'] or in a subject or object slot). Empty for
+    # SUPPORTED/ABSENT/PARTIAL probes and for traps whose source records
+    # share no bridge. A bridge in Record.extra is in no fragment text, so
+    # the agent sees a trap's bridge only in a fragment whose text names a
+    # slot bridge.
     bridge_context: frozenset[str] = field(default_factory=frozenset)
 
     def is_mnemonic_boundary_violation(self) -> bool:
         return self.is_fragment_supported and not self.is_event_supported
 
     def is_bridge_linked(self) -> bool:
-        """True iff this probe carries shared-bridge evidence across its source events."""
+        """True iff bridge_context is non-empty."""
         return len(self.bridge_context) > 0
 
 
@@ -330,22 +322,21 @@ class Corpus:
         default_factory=lambda: MappingProxyType({})
     )
 
-    # The entity sanitizer: { original_entity -> sanitized_token }. Used by
-    # the Fragment dataclass when producing tenant-hidden views. Carried on
-    # the corpus for inspection and so audit-trail replay can recover the
-    # sanitized forms reproducibly.
+    # The entity sanitizer the generator used: { original_entity ->
+    # sanitized_token }. The fragments already hold their sanitized forms;
+    # run_paper.py check reads it to find questions that name a raw,
+    # tenant-specific subject.
     entity_sanitizer: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({})
     )
 
-    # Store-level provenance resolver. Granted to BCESV; never V_frag.
+    # Store-level provenance resolver; not part of the fragment-level view.
     resolver: ProvenanceResolver | None = None
 
-    # The BridgePools whitelist used during generation. Carried on the
-    # corpus so validation, scoring, and realism audits can re-derive
-    # which entities are cross-tenant bridges vs per-tenant entities.
-    # Default is an empty BridgePools (no bridges configured).
-    bridge_pools: object = None  # actually BridgePools; using object to avoid circular import
+    # The BridgePools whitelist used during generation (validation.BridgePools,
+    # typed as object because validation imports this module). run_paper.py
+    # check reads it to count the records that carry a bridge.
+    bridge_pools: object = None
 
     def tenants(self) -> tuple[str, ...]:
         return tuple(sorted({r.client_id for r in self.records}))

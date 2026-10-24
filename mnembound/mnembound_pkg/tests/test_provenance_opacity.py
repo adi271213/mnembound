@@ -1,7 +1,7 @@
 """
 Provenance and view opacity tests.
 
-Verifies the §4.2 abstraction at the implementation level:
+Verifies the fragment-level abstraction at the implementation level:
 
 - view_for_v_frag(tenant_visible=True) exposes recall components and the
   opaque public provenance ID, with original entity strings. NO record_id,
@@ -13,8 +13,7 @@ Verifies the §4.2 abstraction at the implementation level:
 - Opaque public provenance IDs do not leak record/tenant grouping by their
   string structure.
 
-- The ProvenanceResolver correctly maps opaque IDs back, is corpus-specific,
-  and is the only path to store-level metadata.
+- The ProvenanceResolver maps opaque IDs back and is corpus-specific.
 """
 
 from __future__ import annotations
@@ -26,10 +25,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mnembound.generator import generate_corpus
 from mnembound.schema import (
-    ALL_ROLES,
     PUBLIC_HANDLE_HEX_LEN,
     Fragment,
-    ProvenanceHandle,
 )
 
 
@@ -126,9 +123,9 @@ def test_tenant_hidden_view_strips_tenant_identity() -> None:
 
 def test_tenant_visible_view_intentionally_contains_tenant_strings() -> None:
     """
-    In tenant-visible mode, entity strings include tenant prefixes (this is
-    the whole point of the visible view; §4.4 measures this baseline
-    explicitly). Verify a sample shows the original entity is preserved.
+    In tenant-visible mode, entity strings include tenant prefixes, which is
+    the purpose of the visible view. Verify that the original entity is
+    preserved.
     """
     corpus = generate_corpus(seed=42, n_tenants=10, records_per_tenant=50)
     record_index = {r.record_id: r for r in corpus.records}

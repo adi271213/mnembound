@@ -5,41 +5,39 @@ The Corpus dataclass intentionally holds both fragment-level data (the
 records and fragments themselves) and store-level data (the salt, the
 ProvenanceResolver, the tenant entity pools, the entity sanitizer).
 Passing the whole Corpus to a fragment-level baseline would break the
-§4.2 abstraction by giving the baseline access to information that
+fragment-level abstraction by giving the baseline access to information that
 should be exclusive to store-level verifiers.
 
 This module provides explicit export functions, one per consumer type.
 Each function returns a narrowly-typed bundle containing ONLY what that
-consumer is allowed to see. There is no `export_everything()` because
-there is no consumer that should see everything.
+consumer is allowed to see; export_store_view, which returns everything,
+is for store-side code alone.
 
 Three exports:
 
-- export_fragment_view:  for V_frag baselines (citation logging,
-                         faithfulness, NLI, source-set entailment, graph
-                         consistency). Returns ONLY fragment-level views
-                         (role, value, text, opaque provenance). Does NOT
-                         include the resolver, salt, sanitizer, or any
-                         hidden record/boundary/event metadata. Caller
-                         picks tenant_visible=True or False explicitly.
+- export_fragment_view:  the fragment-level view, for verifiers that see
+                         only fragments (citation checking, faithfulness,
+                         NLI). Returns ONLY role, value, text and opaque
+                         provenance per fragment. Does NOT include the
+                         resolver, salt, sanitizer, or any hidden
+                         record/boundary/event metadata. Caller picks
+                         tenant_visible=True or False explicitly.
+                         serialization.py writes the fragment view files
+                         with it.
 
-- export_bcesv_view:     for BCESV (the defense). Returns fragments with
-                         the resolver and a per-fragment (boundary_id,
-                         event_id) lookup. BCESV-Exact uses the lookup
-                         directly. BCESV-Reconstruct additionally gets
-                         tenant_id, timestamp, log_source, incident_
-                         template, and entity_set per fragment.
+- export_bcesv_view:     a store-side view for a verifier with a resolver:
+                         fragments with their boundary_id, event_id,
+                         tenant_id, timestamp, log_source,
+                         incident_template and entity_set, plus the
+                         resolver. The verifiers in bcesv/ read these
+                         fields from fragments.store.jsonl instead.
 
-- export_store_view:     for ground-truth scoring and validation. Returns
-                         everything: full records, full fragments,
-                         resolver, sanitizer, tenant pools. Used by the
-                         scoring module (which decides per-recall whether
-                         it is event_supported, fragment_supported, etc.)
-                         and by the realism audit.
+- export_store_view:     everything: full records, full fragments,
+                         resolver, sanitizer, tenant pools and salt.
 
 Tests in test_export_safety.py verify that each export's keys never
 include forbidden fields and that nothing accidentally pulls the resolver
-into the V_frag bundle.
+into the fragment-level bundle.
 """
 
 from __future__ import annotations
@@ -53,7 +51,7 @@ from mnembound.schema import Corpus, Fragment, ProvenanceResolver, Record
 
 # Keys that must NEVER appear in a fragment-level export. If any of these
 # keys is found in a FragmentViewBundle entry, the export is broken and
-# the §4.2 abstraction is violated.
+# the fragment-level abstraction is violated.
 FORBIDDEN_KEYS_IN_FRAGMENT_VIEW: frozenset[str] = frozenset({
     "record_id",
     "boundary_id",
@@ -97,10 +95,8 @@ def export_fragment_view(
     Args:
         corpus: The full corpus.
         tenant_visible: REQUIRED keyword-only. Whether to include tenant
-            identity lexically in `value` and `text`. The default
-            experimental condition in the paper is tenant_visible=False;
-            the tenant-visible setting is used only for the §4.4
-            source-set-entailment fairness baseline.
+            identity lexically in `value` and `text`. The released runs
+            use tenant_visible=False.
 
     Returns:
         FragmentViewBundle whose `fragments` tuple contains exactly the
@@ -122,9 +118,9 @@ class BcesvFragmentRecord:
     """
     One fragment as visible to BCESV.
 
-    BCESV-Exact uses (boundary_id, event_id) directly.
-    BCESV-Reconstruct additionally uses (tenant_id, timestamp, log_source,
-    incident_template, entity_set).
+    BcesvExact groups by boundary_id; BcesvReconstruct uses tenant_id,
+    timestamp, log_source, incident_template and entity_set
+    (bcesv/bcesv.py).
 
     The opaque public_provenance_id is included so BCESV can join its
     output back against retrieval traces and audit logs that key on opaque
@@ -163,15 +159,16 @@ def export_bcesv_view(corpus: Corpus) -> BcesvBundle:
     """
     Export the BCESV-visible view of the corpus.
 
-    BCESV is a store-level verifier and falls outside the §4.2 abstraction
+    BCESV is a store-level verifier and falls outside the fragment-level abstraction
     by design. It receives full per-fragment metadata (boundary, event,
     tenant, timestamp, log source, incident template, entity set) plus the
     resolver for opaque-ID-to-record lookup.
 
-    What BCESV does NOT receive: the entity sanitizer (BCESV has no need
-    for sanitized strings; that's a V_frag concern) and the full Corpus
-    object (we hand BCESV a narrowly-typed bundle to make accidental
-    leakage harder).
+    What it does NOT receive: the entity sanitizer and the full Corpus
+    object (a narrowly-typed bundle makes accidental leakage harder). Its
+    records carry the tenant-visible value and text; bcesv/bcesv.py, which
+    checks tenant-hidden recalls, reads the sanitized fields of
+    fragments.store.jsonl instead.
     """
     if corpus.resolver is None:
         raise ValueError(
@@ -214,18 +211,9 @@ def export_bcesv_view(corpus: Corpus) -> BcesvBundle:
 @dataclass(frozen=True)
 class StoreViewBundle:
     """
-    Full store-level view of the corpus.
-
-    Used by:
-    - The scoring module (computes is_event_supported, is_fragment_supported,
-      boundary-invalid recall rate, etc. against construction-known
-      ground truth).
-    - The validation module (already imports Corpus directly).
-    - The realism audit.
-
-    This bundle is essentially a typed wrapper around the corpus. We expose
-    it as a separate function so that callers must state "I want store-level
-    access" explicitly, which is a useful signal in code review.
+    Full store-level view of the corpus: a typed wrapper around it, exposed
+    as a separate function so that callers must state "I want store-level
+    access" explicitly.
     """
 
     records: tuple[Record, ...]
@@ -240,8 +228,8 @@ def export_store_view(corpus: Corpus) -> StoreViewBundle:
     """
     Export the full store-level view.
 
-    Caller must hold this only for scoring, validation, realism audit, or
-    other ground-truth-bearing code. Never pass this object or any of its
+    Caller must hold this only for scoring, validation, or other
+    ground-truth-bearing code. Never pass this object or any of its
     fields to a V_frag baseline.
     """
     if corpus.resolver is None:

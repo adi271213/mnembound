@@ -13,7 +13,7 @@ Verifies:
 - Extra-bridges appear in Record.extra['bridge'].
 - Tenant-hidden view does NOT sanitize bridge entities (they remain
   visible as ip:.../hash:.../cve:.../vendor:.../actor:... in both view
-  modes; this is the §5 realism story).
+  modes).
 - Cross-boundary trap preference: prefer_bridge_linked=True produces
   traps with non-empty bridge_context when bridges exist.
 """
@@ -26,16 +26,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mnembound.bridges import (
-    BridgeAssignment,
     BridgeDensitySpec,
     DEFAULT_BRIDGE_POOL_SIZES,
-    SLOT_ELIGIBLE_BRIDGE_TYPES,
     assign_bridges_to_records,
     build_bridge_pools,
 )
 from mnembound.generator import generate_corpus
 from mnembound.probes import generate_cross_boundary_traps
-from mnembound.schema import ProbeType
 
 
 # ----- BridgePools and BridgeDensitySpec -----
@@ -121,11 +118,10 @@ def test_assign_bridges_produces_correct_counts() -> None:
     assert len(assignment.slot_bridges_by_record_id) == 100
 
     # Every slot assignment is on an eligible category.
-    for rid, (slot_name, entity) in assignment.slot_bridges_by_record_id.items():
+    for slot_name, entity in assignment.slot_bridges_by_record_id.values():
         assert slot_name in ("subject", "object_")
         prefix = entity.split(":", 1)[0]
-        # The prefix appears in SLOT_ELIGIBLE_BRIDGE_TYPES via the type letter
-        # mapping (h_/ip:, hash:, etc.).
+        # The entity prefixes of the five bridge categories.
         assert prefix in ("ip", "hash", "cve", "vendor", "actor"), (
             f"slot entity {entity!r} has unexpected prefix"
         )
@@ -154,7 +150,7 @@ def test_assign_bridges_is_deterministic() -> None:
 
 
 def test_generator_default_is_no_bridges() -> None:
-    """Default generator behavior preserves the pre-bridge baseline (no bridges)."""
+    """By default the generator assigns no bridges."""
     c = generate_corpus(seed=42, n_tenants=5, records_per_tenant=50)
     n_extra = sum(1 for r in c.records if r.extra.get("bridge"))
     assert n_extra == 0
@@ -165,7 +161,7 @@ def test_generator_default_is_no_bridges() -> None:
             assert prefix not in ("ip", "hash", "cve", "vendor", "actor"), (
                 f"unexpected bridge-typed slot in default generation: {slot_val}"
             )
-    print("[OK] default generator produces no bridges (backwards-compat)")
+    print("[OK] default generator produces no bridges")
 
 
 def test_generator_extra_bridges_appear_at_target_density() -> None:
@@ -240,9 +236,8 @@ def test_slot_bridge_component_text_updates() -> None:
 
 def test_bridge_entities_are_not_sanitized() -> None:
     """
-    Bridge entities are tenant-neutral by construction and should remain
-    VISIBLE in both view modes. The §5 realism story depends on this:
-    an aggregator must see that two tenants share the same IP.
+    Bridge entities are tenant-neutral by construction, so the sanitizer
+    leaves them unchanged: a slot bridge reads the same in both views.
     """
     c = generate_corpus(
         seed=42, n_tenants=10, records_per_tenant=100,
@@ -293,10 +288,8 @@ def test_random_traps_have_empty_bridge_context_typically() -> None:
     )
     traps = generate_cross_boundary_traps(c, n_probes=30, seed=1)
     n_with_bridge = sum(1 for t in traps if t.is_bridge_linked())
-    # At 5% extra density across 5 source events, the expected number of
-    # accidental bridge-shared trap pairs is low. We allow up to ~30% as a
-    # generous statistical bound (not strictly enforced; the test is about
-    # the qualitative difference vs prefer_bridge_linked=True).
+    # At 5% extra density across 5 source records, accidental bridge
+    # sharing is rare; the bound is half of the traps.
     assert n_with_bridge < len(traps) // 2, (
         f"{n_with_bridge}/{len(traps)} random traps have bridges, expected fewer"
     )

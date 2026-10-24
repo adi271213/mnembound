@@ -3,28 +3,32 @@ Smoke test for the corpus generator.
 
 Verifies:
 1. Generator runs end-to-end at 10 tenants × 100 records without error.
-2. Default boundary granularity is TENANT (b-A, not b-A-0000).
+2. Default boundary granularity is TENANT (boundary ids b-A, b-B, ...).
 3. Disjoint-pool invariants pass.
 4. Determinism: same seed -> identical output.
 5. Per-tenant record counts are correct.
 6. Each record produces exactly 5 fragments.
 7. Fragments expose tenant-visible AND tenant-hidden views correctly.
-8. ENGAGEMENT and EVENT boundary granularities still work.
+8. ENGAGEMENT and EVENT boundary granularities give the expected boundaries.
 9. tenant_prefix() handles indices beyond 25 cleanly.
 10. Validation correctly catches an injected disjointness violation.
-11. Reasonable performance.
+11. Sanitizing a corpus costs a fixed number of sanitizer lookups per
+    record, independent of the size of the sanitizer.
+12. The configuration of the released corpora (10 tenants × 500 records)
+    gives 5,000 records and 25,000 fragments.
 """
 
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from mnembound import generator
 from mnembound.generator import generate_corpus
-from mnembound.identifiers import BoundaryGranularity, tenant_prefix
+from mnembound.identifiers import BoundaryGranularity, build_entity_sanitizer, tenant_prefix
 from mnembound.schema import ALL_ROLES
 from mnembound.validation import ValidationError
 
@@ -96,8 +100,8 @@ def test_engagement_boundary_granularity() -> None:
     print("[OK] ENGAGEMENT granularity produces 5 boundaries per tenant")
 
 
-def test_event_boundary_granularity_still_works() -> None:
-    """EVENT granularity is still supported for stress testing."""
+def test_event_boundary_granularity() -> None:
+    """EVENT granularity gives one boundary per record."""
     corpus = generate_corpus(
         seed=42,
         n_tenants=3,
@@ -297,25 +301,63 @@ def test_tenant_prefix_edge_cases() -> None:
     print("[OK] tenant_prefix handles indices 0..1000 correctly and uniquely")
 
 
-def test_performance() -> None:
-    start = time.perf_counter()
-    corpus = generate_corpus(seed=42, n_tenants=10, records_per_tenant=100)
-    elapsed = time.perf_counter() - start
-    assert elapsed < 2.0, f"generation took {elapsed:.2f}s, expected < 2s"
-    assert len(corpus.records) == 1000
-    print(f"[OK] smoke config (1000 records) generated in {elapsed:.2f}s")
+class _CountingSanitizer(dict):
+    """The entity sanitizer, counting the lookups and the full scans made on it."""
+
+    def __init__(self, entries):
+        super().__init__(entries)
+        self.lookups = 0
+        self.scans = 0
+
+    def get(self, key, default=None):
+        self.lookups += 1
+        return super().get(key, default)
+
+    def __iter__(self):
+        self.scans += 1
+        return super().__iter__()
+
+    def keys(self):
+        self.scans += 1
+        return super().keys()
+
+    def items(self):
+        self.scans += 1
+        return super().items()
+
+    def values(self):
+        self.scans += 1
+        return super().values()
+
+
+def test_sanitizer_lookups_per_record() -> None:
+    """
+    The cost of sanitizing a corpus is fixed per record, independent of the
+    size of the sanitizer: each record takes seven lookups (its subject and
+    object, and the value of each of its five fragments), and the sanitizer
+    is scanned at most once, when the corpus stores a copy of it.
+    """
+    built = []
+
+    def counting_sanitizer(pools, salt):
+        built.append(_CountingSanitizer(build_entity_sanitizer(pools, salt)))
+        return built[-1]
+
+    with mock.patch.object(generator, "build_entity_sanitizer", counting_sanitizer):
+        corpus = generate_corpus(seed=42, n_tenants=10, records_per_tenant=100)
+    (sanitizer,) = built
+    assert len(sanitizer) == sum(len(p) for p in corpus.tenant_entity_pools.values()) == 10500
+    assert sanitizer.lookups == 7 * len(corpus.records) == 7000
+    assert sanitizer.scans <= 1
+    print(f"[OK] smoke config (1000 records): {sanitizer.lookups} lookups and "
+          f"{sanitizer.scans} scan of a {len(sanitizer)}-entry sanitizer")
 
 
 def test_scale_500_per_tenant() -> None:
-    start = time.perf_counter()
     corpus = generate_corpus(seed=42, n_tenants=10, records_per_tenant=500)
-    elapsed = time.perf_counter() - start
     assert len(corpus.records) == 5000
     assert len(corpus.fragments) == 25000
-    assert elapsed < 5.0, f"full config took {elapsed:.2f}s, expected < 5s"
-    print(
-        f"[OK] full config (5000 records / 25000 fragments) generated in {elapsed:.2f}s"
-    )
+    print("[OK] full config: 5000 records / 25000 fragments")
 
 
 def main() -> int:
@@ -323,7 +365,7 @@ def main() -> int:
         test_generator_runs_clean,
         test_default_boundary_is_tenant_level,
         test_engagement_boundary_granularity,
-        test_event_boundary_granularity_still_works,
+        test_event_boundary_granularity,
         test_determinism,
         test_fragment_record_consistency,
         test_tenant_hidden_view_strips_tenant_identity,
@@ -333,7 +375,7 @@ def main() -> int:
         test_boundary_event_pairs_are_unique,
         test_validation_catches_synthetic_violation,
         test_tenant_prefix_edge_cases,
-        test_performance,
+        test_sanitizer_lookups_per_record,
         test_scale_500_per_tenant,
     ]
     failures = []

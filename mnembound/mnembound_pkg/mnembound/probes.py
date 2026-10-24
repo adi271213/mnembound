@@ -5,29 +5,27 @@ A `Probe` is what an agent (or a deterministic verifier) is presented with.
 Each probe carries:
 
 - a `Recall`: the event description we are asking about
-- a tuple of `Fragment`s: the retrieved evidence the agent sees
+- a tuple of `Fragment`s: the probe's evidence set, which the rungs filter
+  before the agent sees it
 - exact ground-truth labels: is_fragment_supported, is_event_supported,
   and the set of distinct (boundary_id, event_id) pairs the supporting
   fragments resolve to (for CROSS_BOUNDARY probes)
 
-The four probe types match the paper's taxonomy in §9:
+The four probe types of the paper:
 
-SUPPORTED      — recall equals an event in the corpus; supporting fragments
-                 all come from that event. Used as the fidelity gate.
-ABSENT         — recall describes an event that exists in no record. The
-                 retrieved fragment set contains UNRELATED fragments (from
-                 various events) that do NOT supply the recall's components.
-                 Correct agent behavior is refusal.
-PARTIAL        — some components are fragment-supported, some are not.
-                 Correct agent behavior is a calibrated, decomposed
-                 statement.
-CROSS_BOUNDARY — every component is fragment-supported by a real authorized
-                 fragment, but the supporting fragments span different
-                 (boundary_id, event_id) pairs and no single record in the
-                 corpus contains all five components. This is the trap
-                 probe; a mnemonic boundary violation occurs whenever an
-                 agent (under aggregation) returns this recall as if it
-                 were a real event.
+SUPPORTED      — the recall is an event of the corpus, and the evidence set
+                 holds that event's five fragments.
+ABSENT         — the recall is an event that no record holds, and the
+                 evidence set comes from other events; it does not supply
+                 all of the recall's components. The agent should abstain.
+PARTIAL        — the recall is an event of the corpus, but the evidence set
+                 holds only some of its fragments, so it is incomplete for a
+                 single event.
+CROSS_BOUNDARY — the cross-boundary trap probe: every component is supplied
+                 by a real fragment, but the fragments come from different
+                 events in two or more boundaries, and no record holds all
+                 five components. A recall of it is fragment-faithful but
+                 event-false.
 
 Ground truth is computed at construction time using the store-level view
 of the corpus (records and fragments with hidden metadata). The probe's
@@ -188,16 +186,16 @@ def generate_supported_probes(
 ) -> tuple[Probe, ...]:
     """
     Generate SUPPORTED probes: the recall is a real event in the corpus,
-    and the retrieved fragment set contains the five fragments of that
-    event (plus optional distractors from OTHER events).
+    and the evidence set contains the five fragments of that event (plus
+    optional distractors from OTHER events).
 
     Args:
         corpus: The corpus to draw from.
         n_probes: How many probes to generate.
         seed: For deterministic sampling.
         distractor_fragments: Extra unrelated fragments to add to the
-            retrieval set. These come from other events and do NOT supply
-            any component of the recall. Defaults to 0 (clean retrieval).
+            evidence set. These come from other events and do NOT supply
+            any component of the recall. Defaults to 0 (clean evidence).
 
     Returns:
         Tuple of n_probes SUPPORTED probes. Each has is_fragment_supported=
@@ -267,35 +265,27 @@ def generate_absent_probes(
     pure-random recall; it is a near-miss: four components from one real
     event plus one component from another real event. We validate that the
     composed recall does NOT appear as any single record in the corpus
-    (rejection sampling), and we build the retrieval set from fragments of
-    yet other records so the recall is also not fragment-supported in the
-    retrieval set.
+    (rejection sampling), and we build the evidence set from fragments of
+    yet other records so the recall is also not fragment-supported by the
+    evidence set.
 
-    Why near-miss rather than fully random: random recalls are easy to
-    refuse because none of the five components is plausible in context.
-    Near-miss recalls (one swapped component) probe whether the agent
-    refuses to commit when most of the recall is supported but one piece
-    contradicts the available evidence. This is the more SOC-realistic
-    "absent event" failure mode.
-
-    Trade-off: a sufficiently capable agent should refuse near-miss
-    recalls because the swapped component is not fragment-supported by
-    the retrieval set. A less capable agent may produce the near-miss
-    recall (this is a hallucination, not a mnemonic boundary violation
-    per the paper's taxonomy).
+    Because the evidence set comes from other records, it supplies few of
+    the recall's components (at most two of the five in the released
+    corpora; run_paper.py check counts them), so the agent should abstain;
+    a recall of it is unsupported, not a cross-boundary composition.
 
     Args:
         corpus: The corpus to draw from.
         n_probes: How many probes to generate.
         seed: For deterministic sampling.
-        retrieval_size: How many fragments are in the retrieved set
-            (these are all unrelated to the recall).
+        retrieval_size: How many fragments are in the evidence set
+            (drawn from records other than the two that the recall is
+            built from).
 
     Returns:
         Tuple of ABSENT probes. Each has is_fragment_supported=False and
-        is_event_supported=False (with "event-supported" interpreted in
-        the retrieval-set sense; see paper §4 "retrieval-event-supported"
-        vs "corpus-supported" distinction).
+        is_event_supported=False: no record holds the recall, and the
+        evidence set does not supply all of its components.
     """
     if n_probes < 1:
         return ()
@@ -315,8 +305,9 @@ def generate_absent_probes(
     while len(probes) < n_probes and attempts < max_attempts:
         attempts += 1
 
-        # Sample two disjoint records: one to supply the recall, one to
-        # supply the retrieval set.
+        # r_recall supplies the recall. r_retrieval only constrains
+        # third_record below; the evidence set is drawn from all fragments
+        # outside r_recall and third_record.
         r_recall, r_retrieval = rng.sample(corpus.records, 2)
 
         # Build the candidate recall from r_recall's components.
@@ -356,8 +347,7 @@ def generate_absent_probes(
         if _is_event_supported_by_construction(swapped_recall, index):
             continue
 
-        # Build the retrieval set from fragments of r_retrieval and others,
-        # making sure none of them supplies a component of the recall.
+        # Build the evidence set from fragments of the other records.
         retrieval_pool = [
             f for f in corpus.fragments
             if f.record_id not in (r_recall.record_id, third_record.record_id)
@@ -366,7 +356,7 @@ def generate_absent_probes(
             continue
         retrieved = rng.sample(retrieval_pool, retrieval_size)
 
-        # Final check: the retrieval set must NOT fragment-support the
+        # Final check: the evidence set must NOT fragment-support the
         # recall (otherwise it would be PARTIAL or worse).
         if _is_fragment_supported_by_set(swapped_recall, retrieved):
             continue
@@ -396,38 +386,34 @@ def generate_partial_probes(
 ) -> tuple[Probe, ...]:
     """
     Generate PARTIAL probes: SOME components of the recall are
-    fragment-supported by the retrieved set; OTHERS are not.
+    fragment-supported by the evidence set; OTHERS are not.
 
-    Construction: start with a real event. The retrieved set contains
+    Construction: start with a real event. The evidence set contains
     `n_supported_components` of that event's five fragments, plus
     optionally `distractor_fragments` unrelated fragments from OTHER events.
     The recall asks about the full event. Therefore exactly
     (5 - n_supported_components) recall components are not fragment-
-    supported by the retrieval set, and the distractors do not change
+    supported by the evidence set, and the distractors do not change
     that (they come from other records and cannot fill the missing roles
     of the recall's underlying event).
 
-    The recall is corpus-supported (the underlying record exists), but is
-    NOT retrieval-event-supported (no support set covers all 5 components
-    inside the retrieval set). The construction labels reflect the
-    retrieval-set view, matching the paper's primary scoring semantics
-    (§4 "retrieval-event-supported").
+    The recall is a real event of the corpus, but the evidence set does
+    not support it: is_fragment_supported and is_event_supported are judged
+    on the evidence set, which lacks the missing roles.
 
     Distractors and realism: with `distractor_fragments=0`, missing roles
-    are conspicuously absent and the partial probe is easy to refuse. With
-    a moderate number of distractors (e.g., 5), the task looks like
-    realistic incomplete-evidence retrieval — the agent has to identify
-    which roles are missing rather than noticing the retrieval is tiny.
-    The §7 partial-refusal-rate metric is more meaningful with
-    distractors > 0; we recommend `distractor_fragments=5` for the main
-    bounded-agent run.
+    are conspicuously absent and the partial probe is easy to abstain on.
+    With a moderate number of distractors (e.g., 5), the evidence looks like
+    a realistic incomplete retrieval — the agent has to identify which roles
+    are missing rather than noticing that the evidence set is tiny.
+    The released corpora use `distractor_fragments=5`.
 
     Args:
         n_supported_components: How many of the 5 components are
             fragment-supported by the primary fragments. Must be 1..4
             (0 would be ABSENT, 5 would be SUPPORTED).
         distractor_fragments: How many extra unrelated fragments to add
-            to the retrieval set. These come from OTHER events than the
+            to the evidence set. These come from OTHER events than the
             probe's underlying event and never fill missing roles.
     """
     if n_probes < 1:
@@ -454,7 +440,7 @@ def generate_partial_probes(
             break
 
         primary_fragments = list(index.fragments_by_record[r.record_id])
-        # Pick which subset of fragments will be retrieved.
+        # Pick which subset of the event's fragments the evidence set holds.
         retained = rng.sample(primary_fragments, n_supported_components)
 
         # Add distractor fragments from OTHER records. We exclude any
@@ -482,8 +468,8 @@ def generate_partial_probes(
             distractors = rng.sample(candidate_distractors, n_dist)
             retained = retained + distractors
 
-        # Sanity check: even with distractors, the retrieval set has
-        # exactly `n_supported_components` of the recall's components.
+        # Sanity check: the distractors never supply a missing component, so
+        # the evidence set does not support the whole recall.
         assert not _is_fragment_supported_by_set(recall, retained), (
             f"partial probe {i} accidentally became fragment-supported "
             "after distractor injection"
@@ -502,7 +488,7 @@ def generate_partial_probes(
     return tuple(probes)
 
 
-# ---------- Cross-boundary trap probes (the key probe) ----------
+# ---------- Cross-boundary trap probes ----------
 
 
 def generate_cross_boundary_traps(
@@ -515,7 +501,7 @@ def generate_cross_boundary_traps(
     prefer_bridge_linked: bool = False,
 ) -> tuple[Probe, ...]:
     """
-    Generate CROSS_BOUNDARY trap probes — the key probe of the paper.
+    Generate CROSS_BOUNDARY trap probes.
 
     Construction: select five fragments — one per role (subject, action,
     object, outcome, time) — from up to `n_source_events` DIFFERENT events,
@@ -529,18 +515,15 @@ def generate_cross_boundary_traps(
     3. The composed recall is NOT corpus-supported, i.e., no record
        contains all five (role, value) pairs together.
 
-    The resulting probe has is_fragment_supported=True,
-    is_event_supported=False, which is the mnemonic boundary violation
-    signature.
+    The resulting probe has is_fragment_supported=True and
+    is_event_supported=False: a recall of it is fragment-faithful but
+    event-false.
 
-    Bridge preference (§5 realism story): when prefer_bridge_linked=True,
-    the generator first tries to sample source events that share a bridge
-    entity (in their `extra['bridge']` field or in their slot values).
-    A bridge-linked trap is SOC-plausible: an aggregator sees that events
-    at clientA and clientB both reference IP 198.51.100.42, so composing
-    them feels coherent. A pure-random trap is formal-only: there is no
-    surface signal linking the events, so an aggregator would need to
-    have ignored boundaries to compose them.
+    Bridge preference: when prefer_bridge_linked=True, the generator first
+    tries to sample source records that share a bridge entity (in their
+    `extra['bridge']` field or in their slot values), so that the bridge
+    links the trap's records in the store. The agent sees the bridge only
+    in a fragment whose text names it (see mnembound.bridges).
 
     When prefer_bridge_linked=True, every produced trap has a non-empty
     bridge_context if such traps are findable. If the corpus has no
@@ -555,14 +538,14 @@ def generate_cross_boundary_traps(
         max_retries_per_probe: Bound on rejection sampling.
         require_distinct_boundaries: If True, the n_source_events must
             also span >= 2 distinct boundary_ids. With TENANT granularity
-            this means >= 2 tenants — the natural setting for the paper.
+            this means >= 2 tenants.
         prefer_bridge_linked: If True, preferentially sample source events
             that share a bridge entity. Falls back to pure-random if no
             bridge-linked candidates can be found within the retry budget.
 
     Returns:
-        Tuple of CROSS_BOUNDARY probes. Each is a mnemonic boundary
-        violation by construction. Probes generated with
+        Tuple of CROSS_BOUNDARY probes, each fragment-supported and not
+        event-supported by construction. Probes generated with
         prefer_bridge_linked=True may also carry non-empty bridge_context.
     """
     if n_probes < 1:
@@ -680,7 +663,7 @@ def generate_cross_boundary_traps(
         ]
         bridge_context = _compute_shared_bridges(contributing_records)
 
-        # All five role-fragments form the retrieval set.
+        # All five role-fragments form the evidence set.
         fragments_tuple = tuple(role_to_fragment[role] for role in ALL_ROLES)
 
         probes.append(Probe(
@@ -762,17 +745,16 @@ def generate_probe_mix(
     """
     Generate a balanced probe mix.
 
-    Defaults total 300 probes which matches the documented bounded-experiment plan
-    (300 probes per condition). The cross-boundary trap count is set
-    highest because that is the key probe of the paper.
+    The defaults give the 300 probes per corpus of the released runs: 100
+    supported, 50 absent, 50 partial and 100 cross-boundary.
 
     Each probe type uses a sub-seed derived from the master seed so that
     changing one probe count does not perturb the others' sampling.
 
     Args:
         partial_distractor_fragments: How many unrelated fragments to add
-            to PARTIAL probes' retrieval sets. 0 (default) preserves the original
-            behavior; 5 is recommended for the bounded-agent run.
+            to PARTIAL probes' evidence sets (default 0; the released
+            corpora use 5).
         prefer_bridge_linked_traps: When True, CROSS_BOUNDARY traps prefer
             source events that share a bridge entity. Requires the corpus
             to have been generated with bridges enabled.

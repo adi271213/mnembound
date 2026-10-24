@@ -64,8 +64,6 @@ def test_supported_probes_satisfy_definition() -> None:
         assert len(p.boundary_event_pairs) == 1
         assert is_fragment_supported(p.recall, p.fragments)
         assert is_event_supported(p.recall, p.fragments)
-        # Every component value appears in some fragment with matching role.
-        # (Implied by is_fragment_supported, but verified again here.)
 
     print("[OK] 20 SUPPORTED probes satisfy fragment- AND event-supported")
 
@@ -91,7 +89,7 @@ def test_absent_probes_satisfy_definition() -> None:
     corpus = _make_corpus()
     probes = generate_absent_probes(corpus, n_probes=20, seed=2)
     # Generator may produce fewer than requested if it cannot find valid
-    # configurations within the retry budget; require at least 1 and check
+    # configurations within the retry budget; require at least 10 and check
     # every produced probe.
     assert len(probes) >= 10, f"only produced {len(probes)} absent probes"
 

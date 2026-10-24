@@ -6,10 +6,9 @@ Verifies:
 - BOUNDARY_PRESERVING_TOPK behaves identically to ISOLATED under TENANT
   granularity (one boundary per tenant).
 - SHARED_VECTOR_INDEX returns all fragments unchanged.
-- SUMMARY_MERGE returns all fragments and produces a non-empty
-  context_text.
-- The central empirical claim: rungs that share more produce more
-  boundary-invalid recalls (when an agent emits the probe's recall).
+- SUMMARY_MERGE returns all fragments and leaves context_text empty.
+- With the probe's own recall as the response, the boundary-invalid rate on
+  traps is 0 on the two safe rungs and 1 on the two unsafe rungs.
 - querying_tenant resolution is correct for each probe type.
 - RungSummary statistics are sensible.
 """
@@ -34,8 +33,6 @@ from mnembound.schema import ProbeType
 from mnembound.scoring import (
     RecallResponse,
     boundary_invalid_recall_rate,
-    is_boundary_invalid,
-    is_fragment_supported,
 )
 
 
@@ -124,19 +121,17 @@ def test_summary_merge_keeps_all_fragments() -> None:
     print("[OK] SUMMARY_MERGE keeps all fragments; context_text rendered on demand")
 
 
-# ----- The central empirical claim -----
+# ----- Trap rates by rung -----
 
 
-def test_empirical_claim_rungs_that_share_more_produce_more_violations() -> None:
+def test_trap_rates_by_rung() -> None:
     """
-    Run the always-recall stub through each rung. The boundary-invalid
-    rate on CROSS_BOUNDARY probes should be:
+    With each trap's own recall as the response on every rung, the
+    boundary-invalid rate on CROSS_BOUNDARY probes is:
       ISOLATED                 -> 0.0
       BOUNDARY_PRESERVING_TOPK -> 0.0
       SHARED_VECTOR_INDEX      -> 1.0
       SUMMARY_MERGE            -> 1.0
-
-    This is the central paper claim, reproducible without any LLM.
     """
     corpus = generate_corpus(
         seed=42, n_tenants=10, records_per_tenant=200,
@@ -164,7 +159,7 @@ def test_empirical_claim_rungs_that_share_more_produce_more_violations() -> None
     assert rates[Rung.SUMMARY_MERGE] == 1.0
 
     print(
-        f"[OK] central empirical claim: rates = "
+        f"[OK] trap rates by rung: "
         f"ISO={rates[Rung.ISOLATED]}, BP={rates[Rung.BOUNDARY_PRESERVING_TOPK]}, "
         f"SVI={rates[Rung.SHARED_VECTOR_INDEX]}, SM={rates[Rung.SUMMARY_MERGE]}"
     )
@@ -211,8 +206,7 @@ def test_summarize_rung_returns_sensible_stats() -> None:
         s = summarize_rung(rung, list(corpus.probes), corpus)
         assert s.rung == rung
         assert s.n_probes == len(corpus.probes)
-        # Retention by probe type covers all four types.
-        # (Not necessarily — but should at least cover what's in this corpus.)
+        # Every retention value is a fraction.
         for ptype in s.retention_by_probe_type:
             assert 0.0 <= s.retention_by_probe_type[ptype] <= 1.0
         # SUPPORTED retention is always 1.0 (no cross-tenant fragments).
@@ -232,9 +226,8 @@ def test_render_summary_text_uses_correct_view() -> None:
     visible = render_summary_text(p, tenant_visible=True)
     hidden = render_summary_text(p, tenant_visible=False)
     assert visible != hidden  # they should differ
-    # Hidden text should not contain "clientA", "-A.", etc.
+    # The tenant-hidden text names no tenant.
     for tid in corpus.tenants():
-        suffix_letter = tid.removeprefix("client")
         assert tid not in hidden, f"tenant-hidden summary leaked {tid}"
     print("[OK] render_summary_text correctly distinguishes visible vs hidden")
 
@@ -246,7 +239,7 @@ def main() -> int:
         test_boundary_preserving_topk_matches_isolated_under_tenant_granularity,
         test_shared_vector_index_returns_all_fragments,
         test_summary_merge_keeps_all_fragments,
-        test_empirical_claim_rungs_that_share_more_produce_more_violations,
+        test_trap_rates_by_rung,
         test_querying_tenant_for_supported_probe,
         test_querying_tenant_for_cross_boundary_probe,
         test_summarize_rung_returns_sensible_stats,

@@ -28,10 +28,7 @@ from mnembound.scoring import (
     summarize,
 )
 from mnembound.serialization import (
-    fragment_to_store_dict,
-    probe_to_dict,
     read_jsonl,
-    record_to_dict,
     write_experiment_artifacts,
     write_fragments_store_jsonl,
     write_fragments_tenant_hidden_jsonl,
@@ -84,7 +81,7 @@ def test_records_jsonl_roundtrips() -> None:
 
 
 def test_tenant_hidden_fragments_file_has_no_forbidden_keys() -> None:
-    """The single most important serialization test: no V_frag leakage."""
+    """The tenant-hidden fragments file holds only {role, value, text, provenance}."""
     c, _ = _make_corpus_and_responses()
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         path = f.name
@@ -188,7 +185,7 @@ def test_probes_jsonl_carries_ground_truth_labels() -> None:
 
 
 def test_responses_jsonl_roundtrips() -> None:
-    c, responses = _make_corpus_and_responses()
+    _, responses = _make_corpus_and_responses()
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         path = f.name
     try:
@@ -204,7 +201,7 @@ def test_responses_jsonl_roundtrips() -> None:
 
 
 def test_metrics_json_has_all_fields() -> None:
-    c, responses = _make_corpus_and_responses()
+    _, responses = _make_corpus_and_responses()
     summary = summarize(responses, verifier_functions={
         "blind": lambda r: True,
         "oracle": lambda r: not (

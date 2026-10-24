@@ -1,13 +1,11 @@
 """
 mnembound.generator — Top-level corpus generator.
 
-- BoundaryGranularity is a top-level config parameter. Default is TENANT
-  (one confidentiality boundary per tenant). The earlier per-event behavior is preserved via
-  BoundaryGranularity.EVENT for backwards-compat.
-- An entity sanitizer is built per corpus. Each Fragment carries both
-  tenant-visible and sanitized forms of `value` and `text`. The view
-  returned by Fragment.view_for_v_frag(tenant_visible=...) selects which.
-- Removed unused `import secrets`.
+BoundaryGranularity is a top-level configuration parameter. The default,
+TENANT, gives one confidentiality boundary per tenant; EVENT gives one
+boundary per record. An entity sanitizer is built per corpus, and each
+Fragment carries both tenant-visible and sanitized forms of `value` and
+`text`; Fragment.view_for_v_frag(tenant_visible=...) selects the view.
 """
 
 from __future__ import annotations
@@ -17,23 +15,21 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 
 from mnembound.bridges import (
-    BridgeAssignment,
     BridgeDensitySpec,
     assign_bridges_to_records,
     build_bridge_pools,
 )
 from mnembound.identifiers import (
     BoundaryGranularity,
-    TenantEntityPool,
     boundary_id_for,
     build_entity_sanitizer,
     build_tenant_entity_pools,
     make_event_id,
     make_record_id,
 )
+from mnembound.probes import generate_probe_mix
 from mnembound.schema import (
     ALL_ROLES,
-    ComponentRole,
     Corpus,
     Fragment,
     ProvenanceHandle,
@@ -46,7 +42,6 @@ from mnembound.templates import (
     sample_timestamp,
 )
 from mnembound.validation import (
-    BridgePools,
     assert_disjoint_entity_pools,
     validate_corpus,
 )
@@ -59,8 +54,8 @@ def derive_salt(seed: int) -> str:
     """
     Derive a corpus-level provenance salt deterministically from the seed.
 
-    Stored on the Corpus so audit-trail replay and BCESV can reproduce
-    public IDs across runs with the same seed.
+    Stored on the Corpus (and in corpus.json); the same seed gives the same
+    salt and so the same public handles.
     """
     rng = random.Random(seed)
     return f"mnembound:{rng.randint(0, 2**128 - 1):032x}"
@@ -89,8 +84,8 @@ def generate_corpus(
     Args:
         seed: Master seed. All randomness derives from this.
         n_tenants: Number of tenants (default 10).
-        records_per_tenant: Records per tenant (default 100 for smoke;
-            500 for full config).
+        records_per_tenant: Records per tenant (default 100; the released
+            corpora use 500).
         timestamp_window_days: Time window for record timestamps.
         base_timestamp: Start of the timestamp window.
         boundary_granularity: How boundaries are scoped within a tenant.
@@ -101,21 +96,20 @@ def generate_corpus(
         n_absent_probes: How many ABSENT probes to attach.
         n_partial_probes: How many PARTIAL probes to attach.
         n_cross_boundary_probes: How many CROSS_BOUNDARY trap probes to
-            attach. This is the key probe of the paper.
+            attach.
         bridge_density: Per-record bridge density specification. Default
-            None means BridgeDensitySpec.disabled() (no bridges, matching
-            the legacy bridge-free behavior). Pass BridgeDensitySpec() for the current defaults
-            (5% extra, 0% slot). See mnembound.bridges for the design.
+            None means BridgeDensitySpec.disabled() (no bridges). Pass
+            BridgeDensitySpec() for 5% extra and 0% slot bridges; the
+            released corpora use BridgeDensitySpec(extra=0.05, slot=0.01).
+            See mnembound.bridges for the design.
         bridge_pool_sizes: Override the default bridge pool sizes. Useful
             for ablations.
         partial_distractor_fragments: Number of unrelated fragments to
             inject into PARTIAL probes' retrieval sets (default 0).
-            Recommended value for the bounded LLM run is 5.
+            The released corpora use 5.
         prefer_bridge_linked_traps: When True, CROSS_BOUNDARY traps prefer
-            source events that share a bridge entity. Defaults to False.
-            For the bounded LLM run with bridges enabled, set this to True
-            so traps look like plausible MSSP confusion rather than
-            arbitrary stitched events.
+            source records that share a bridge entity. Defaults to False;
+            the released corpora set it to True.
 
     Returns:
         A validated Corpus carrying records, fragments, provenance salt,
@@ -157,7 +151,7 @@ def generate_corpus(
     # Note: bridge entities live in their own namespace (ip:, hash:, cve:,
     # vendor:, actor:) and are intentionally NOT sanitized — they are
     # tenant-neutral by construction and should remain visible in both
-    # view modes (this is the §5 realism story).
+    # view modes.
     sanitizer = build_entity_sanitizer(pools, salt)
 
     # 4. Materialize records, per tenant, in numeric tenant_index order.
@@ -254,15 +248,14 @@ def generate_corpus(
         # Per-record sanitization: only the record's own subject and object_
         # can appear in its fragment text. We pre-compute the (visible, hidden)
         # replacement pairs for THIS record once, then reuse across its five
-        # fragments. This avoids scanning the full ~7,500-entity sanitizer for
-        # every fragment.
+        # fragments, instead of scanning the whole sanitizer for every
+        # fragment.
         per_record_pairs: list[tuple[str, str]] = []
         for visible in (r.subject, r.object_):
             hidden = sanitizer.get(visible)
             if hidden is not None and hidden != visible:
                 per_record_pairs.append((visible, hidden))
-        # Longest-first so 'host:web001-A.clientA.local' is matched before any
-        # potential substring (defensive; not strictly needed here).
+        # Longest first, so that no entity is replaced inside a longer one.
         per_record_pairs.sort(key=lambda p: len(p[0]), reverse=True)
 
         for fragment_index, role in enumerate(ALL_ROLES):
@@ -337,9 +330,7 @@ def generate_corpus(
     )
     validate_corpus(base_corpus, bridges=bridges)
 
-    # 9. Probe generation (if requested). Imported here to avoid a circular
-    # dependency at module load time (probes.py imports schema, which lives
-    # below generator in the dependency graph).
+    # 9. Probe generation (if requested).
     probes: tuple = ()
     if (
         n_supported_probes > 0
@@ -347,7 +338,6 @@ def generate_corpus(
         or n_partial_probes > 0
         or n_cross_boundary_probes > 0
     ):
-        from mnembound.probes import generate_probe_mix
         mix = generate_probe_mix(
             base_corpus,
             seed=master_rng.randint(0, 2**31 - 1),

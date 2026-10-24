@@ -1,0 +1,34 @@
+corpus configuration (PAPER_CORPUS): 10 tenants of 500 records; bridge density 5% in Record.extra and 1% in the subject or object slot; probes 100 supported, 50 absent, 50 partial, 100 cross_boundary; 5 distractor fragments in partial probes; bridge-linked traps True
+decoding of run (DECODING): temperature 0.0, top_p 1.0, max_tokens 400
+
+condition                   corpus.json  probes  store rung_stats  contexts
+mistral_full_cautious              same    same   same       same       all
+mistral_full_cautious_pcb          same    same   same       same       all
+mistral_full_neutral               same    same   same       same       all
+mistral_full_pcb                   same    same   same       same       all
+qwen_full_cautious                 same    same   same       same       all
+qwen_full_cautious_pcb             same    same   same       same       all
+qwen_full_neutral                  same    same   same       same       all
+qwen_full_pcb                      same    same   same       same       all
+  seed 42: bridge pools: shared_ip 50, malware_hash 30, cve 20, vendor 15, threat_actor 10
+  seed 42: records 5000; with a bridge in Record.extra 250, in the subject or object slot 50, either 298
+  seed 42: trap probes 100; with one bridge entity 100; whose five source records all carry it 100 (in Record.extra 425 of 500 source records, in the subject or object slot 75)
+  seed 42: absent probes 50, by how many of the recall's five components their evidence supplies: 0: 35, 1: 14, 2: 1
+  seed 42: probes whose question names a raw, tenant-specific subject: supported 0 of 100, absent 50 of 50, partial 18 of 50, cross_boundary 0 of 100; their responses in the 8 conditions: 2176
+mistral_seed43_neutral             same    same   same       same       all
+qwen_seed43_neutral                same    same   same       same       all
+  seed 43: bridge pools: shared_ip 50, malware_hash 30, cve 20, vendor 15, threat_actor 10
+  seed 43: records 5000; with a bridge in Record.extra 250, in the subject or object slot 50, either 298
+  seed 43: trap probes 100; with one bridge entity 100; whose five source records all carry it 100 (in Record.extra 391 of 500 source records, in the subject or object slot 109)
+  seed 43: absent probes 50, by how many of the recall's five components their evidence supplies: 0: 30, 1: 19, 2: 1
+  seed 43: probes whose question names a raw, tenant-specific subject: supported 0 of 100, absent 50 of 50, partial 19 of 50, cross_boundary 0 of 100; their responses in the 2 conditions: 552
+mistral_seed44_neutral             same    same   same       same       all
+qwen_seed44_neutral                same    same   same       same       all
+  seed 44: bridge pools: shared_ip 50, malware_hash 30, cve 20, vendor 15, threat_actor 10
+  seed 44: records 5000; with a bridge in Record.extra 250, in the subject or object slot 50, either 296
+  seed 44: trap probes 100; with one bridge entity 100; whose five source records all carry it 100 (in Record.extra 453 of 500 source records, in the subject or object slot 47)
+  seed 44: absent probes 50, by how many of the recall's five components their evidence supplies: 0: 25, 1: 20, 2: 5
+  seed 44: probes whose question names a raw, tenant-specific subject: supported 0 of 100, absent 49 of 50, partial 25 of 50, cross_boundary 0 of 100; their responses in the 2 conditions: 592
+responses whose question names a raw, tenant-specific subject: 3320 of 14400 (absent 2392, partial 928)
+probes of the 12 conditions whose question names a raw, tenant-specific subject: supported 0 of 1200, absent 598 of 600, partial 232 of 600, cross_boundary 0 of 1200
+regeneration matches the released data

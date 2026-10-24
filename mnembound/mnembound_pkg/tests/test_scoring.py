@@ -17,7 +17,6 @@ from mnembound.probes import (
     generate_cross_boundary_traps,
     generate_supported_probes,
 )
-from mnembound.schema import ProbeType, Recall
 from mnembound.scoring import (
     MetricSummary,
     RecallResponse,
@@ -71,7 +70,7 @@ def test_predicates_on_absent_probe() -> None:
 def test_event_supported_rejects_fragments_across_events() -> None:
     """
     Explicit check: a recall whose components come from different events is
-    fragment-supported but NOT event-supported (the §4.2 corner case).
+    fragment-supported but NOT event-supported (the case behind the separation result).
     """
     corpus = _make_corpus()
     trap = generate_cross_boundary_traps(corpus, n_probes=1, seed=42)[0]
@@ -87,7 +86,7 @@ def test_event_supported_rejects_fragments_across_events() -> None:
 
 
 def _make_responses_from_probes(probes) -> list[RecallResponse]:
-    """Simulate a perfectly-truthful agent: always returns probe.recall."""
+    """Responses that repeat each probe's own recall (event-false for a trap)."""
     return [
         RecallResponse(
             probe_id=p.probe_id,
@@ -126,8 +125,8 @@ def test_boundary_invalid_recall_rate_on_supported_responses() -> None:
 
 def test_fragment_valid_false_recall_rate() -> None:
     """
-    On a trap-only response set, every violation is fragment-supported
-    (the very definition of a CROSS_BOUNDARY trap), so the rate is 1.0.
+    is_boundary_invalid requires fragment support, so on a set of trap
+    responses the rate is 1.0.
     """
     corpus = _make_corpus()
     traps = generate_cross_boundary_traps(corpus, n_probes=20, seed=7)

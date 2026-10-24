@@ -8,12 +8,11 @@ template defines:
 - which log_source typically reports this incident type
 - the per-component sentence text a fragment-level verifier would see
 
-Templates own the rendering. Records store the rendered text. Fragments
-read the text from the Record. There is exactly one place where text is
-constructed, eliminating drift risk between templates.py and
-generator.py.
+Templates render the per-component text; records store it (the generator
+substitutes a slot bridge into it), and fragments read it from their
+record.
 
-We provide five templates spanning the most common SOC incident classes:
+Five templates, one per SOC incident class:
 
 1. INTRUSION           — initial access via credential compromise
 2. EXFILTRATION        — data egress to an external destination
@@ -73,7 +72,7 @@ class TemplateOutput:
     template: TemplateName
     extra: Mapping[str, str]
 
-    # Single source of truth for per-component sentence text.
+    # Per-component sentence text.
     component_text: Mapping[ComponentRole, str]
 
 

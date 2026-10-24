@@ -6,11 +6,9 @@ paper's empirical claim depends on. A violation here means the generator
 has a bug AND the ground-truth labels for some probes will be wrong.
 Every violation raises ValidationError.
 
-- Removed the global `allow_bridges=True` bypass that silently skipped
-  entity-membership checks for both subject and object_.
-- Replaced with an explicit `BridgePools` whitelist that names exactly which
-  cross-tenant entities are allowed by design. Day 3 populates this; Day 2
-  passes an empty BridgePools, which enforces strict per-tenant membership.
+Entity membership is checked against an explicit `BridgePools` whitelist
+that names the cross-tenant entities allowed by design. An empty
+BridgePools enforces strict per-tenant membership.
 """
 
 from __future__ import annotations
@@ -36,9 +34,9 @@ class BridgePools:
     is not in its tenant's per-tenant pool MUST be in the corresponding
     bridge pool, otherwise the disjoint-pool invariant is violated.
 
-    Day 2 uses BridgePools.empty(). Day 3 will populate these with the
-    actual shared IPs, hashes, CVEs, vendors, and threat actors that the
-    bridge-insertion step creates.
+    BridgePools.empty() enforces strict per-tenant membership. The generator
+    populates the pools with the shared IPs, hashes, CVEs, vendors, and
+    threat actors created by bridge insertion.
     """
 
     shared_ips: frozenset[str] = field(default_factory=frozenset)
@@ -128,10 +126,9 @@ def assert_record_entities_in_pool_or_bridges(
     Each record's subject and object_ are either in the tenant's per-tenant
     pool OR in an explicit bridge pool.
 
-    This replaces the earlier `allow_bridges=True` bypass. When
-    bridges are absent (Day 2), this reduces to strict per-tenant
-    membership. When bridges are present (Day 3+), a value is permitted
-    if and only if it is explicitly in the bridge whitelist.
+    Without bridges this is strict per-tenant membership. With bridges, a
+    value outside the tenant pool is permitted if and only if it is in the
+    bridge whitelist.
     """
     bridge_union = bridges.all_bridges()
     for r in records:
@@ -214,8 +211,8 @@ def validate_corpus(corpus: Corpus, bridges: BridgePools | None = None) -> None:
     Args:
         corpus: The Corpus to validate.
         bridges: Explicit bridge whitelist. Pass BridgePools.empty() (or
-            None, which is normalized to empty) for Day 2; pass the
-            populated BridgePools used by the generator on Day 3+.
+            None) for strict per-tenant membership, or the populated
+            BridgePools used by the generator.
 
     Raises ValidationError on first failure with a precise message.
     """

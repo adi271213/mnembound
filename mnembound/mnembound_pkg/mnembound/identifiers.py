@@ -6,14 +6,11 @@ Enforces the central invariant:
     Entity, boundary, and event identifiers are DISJOINT across tenants by
     construction.
 
-- Boundary granularity is now configurable. Default is TENANT (one
-  confidentiality boundary per tenant), matching the paper's MSSP framing.
-  An earlier version implicitly used EVENT granularity (one boundary per record), which
-  conflated boundary-level violations with within-tenant event-level
-  inconsistencies and blurred the paper's thesis.
-- Added view-sanitization helpers (`build_entity_sanitizer`, `sanitize_text`)
-  so the V_frag view can be made truly tenant-hidden when needed for the
-  §7 baseline-fairness comparison.
+Boundary granularity is configurable. The default, TENANT, gives one
+confidentiality boundary per tenant, matching the MSSP setting of the paper;
+EVENT gives one boundary per record. `build_entity_sanitizer` maps every
+per-tenant entity to the token of the tenant-hidden view; the generator
+applies it to the subject and object of each record.
 """
 
 from __future__ import annotations
@@ -23,7 +20,6 @@ import random
 import string
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 
 _TENANT_PREFIX_ALPHABET = string.ascii_uppercase
@@ -41,9 +37,8 @@ class BoundaryGranularity(str, Enum):
                           are partitioned across boundaries within a tenant.
                           Useful for modelling per-engagement scopes in an
                           MSSP that runs many engagements per client.
-    EVENT:                one boundary per record. Legacy default, kept for
-                          backwards-compat and stress-testing. NOT the right
-                          semantics for the headline paper claim.
+    EVENT:                one boundary per record, for stress tests. NOT
+                          the semantics of the headline paper claim.
     """
 
     TENANT = "tenant"
@@ -251,11 +246,8 @@ def make_record_id(tenant_index: int, record_local: int) -> str:
 
 # ----- View sanitization for tenant-hidden mode -----
 #
-# The V_frag baselines must, in some experimental conditions, see entity
-# strings that do NOT reveal tenant identity. Per §4.4 baseline fairness,
-# §7 will run BOTH tenant-hidden and tenant-visible source-set entailment
-# to isolate "did NLI fail because tenant labels were absent" from "did NLI
-# fail because the entailment problem is genuinely hard."
+# The tenant-hidden view replaces every tenant-specific entity string with a
+# token that does not reveal the tenant.
 #
 # The sanitizer maps a tenant-revealing entity like
 #     'host:web001-A.clientA.local'
@@ -268,10 +260,9 @@ def make_record_id(tenant_index: int, record_local: int) -> str:
 #    audit-trail replay against sanitized text behaves correctly.
 # 3. Reversible only by a verifier that holds the salt and the inverse map
 #    (i.e., a store-level verifier). V_frag baselines do not get the inverse.
-# 4. Preserves the entity type prefix (host, user, file, proc, malware) so
-#    NLI baselines can still infer that a fragment refers to a host vs. a
-#    user. This is the right level of information leakage: the §7 comparison
-#    isolates tenant identity, not entity type.
+# 4. Preserves the entity type prefix (host, user, file, proc, malware), so
+#    a reader can still tell a host from a user; only tenant identity is
+#    hidden.
 
 
 _ENTITY_TYPE_PREFIXES: tuple[str, ...] = (
@@ -313,9 +304,10 @@ def _opaque_token_short(letter: str, body: str, salt: str, extra_bytes: int = 0)
     entity-type prefix.
 
     8 hex chars = 32 bits. Combined with the entity type prefix, collisions
-    are unlikely at typical scales (~500 entities/tenant × 10 tenants
-    = 5000). The sanitizer builder runs an explicit collision check and
-    widens via `extra_bytes` if a collision is detected.
+    are unlikely at the corpus's scale (1,050 entities per tenant with the
+    default pool sizes, 10,500 for ten tenants). The sanitizer builder runs
+    an explicit collision check and widens via `extra_bytes` if a collision
+    is detected.
     """
     raw = f"{salt}|{letter}|{body}|{extra_bytes}".encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()[: 8 + extra_bytes]
@@ -331,8 +323,8 @@ def build_entity_sanitizer(
     tenant-hidden opaque token.
 
     The token preserves entity-type information (`host:` -> `host:h_...`,
-    `user:` -> `user:u_...`, etc.) so an NLI baseline can still tell that
-    a fragment refers to a host vs. a user. It does NOT preserve tenant
+    `user:` -> `user:u_...`, etc.) so a reader of the sanitized text can
+    still tell that a fragment refers to a host vs. a user. It does NOT preserve tenant
     identity.
 
     Collisions are checked. If two distinct entities collide, the token
@@ -369,68 +361,3 @@ def build_entity_sanitizer(
             token_to_source[token] = entity
 
     return sanitizer
-
-
-def sanitize_text(text: str, sanitizer: dict[str, str]) -> str:
-    """
-    Replace every per-tenant entity occurrence in `text` with its sanitized
-    token. Other content (verbs, timestamps, log sources) is unchanged.
-
-    Convenience wrapper that builds the regex on each call. For corpus-scale
-    use, the generator builds a single regex via `compile_sanitizer_regex`
-    and reuses it across all fragments.
-    """
-    pattern, _ = compile_sanitizer_regex(sanitizer)
-    return sanitize_text_with_compiled_regex(text, sanitizer, pattern)
-
-
-def compile_sanitizer_regex(sanitizer: dict[str, str]) -> tuple[Any, list[str]]:
-    """
-    Compile a single regex alternation matching every sanitizer key.
-
-    Keys are sorted by descending length so longer entity strings are
-    preferred over substrings. The compiled regex is used by
-    sanitize_text_with_compiled_regex for performance.
-
-    Returns: (compiled_pattern, keys_by_length).
-    """
-    import re as _re
-    keys_by_length = sorted(sanitizer.keys(), key=len, reverse=True)
-    if not keys_by_length:
-        # Empty sanitizer: a regex that never matches.
-        pattern = _re.compile(r"(?!x)x")
-    else:
-        pattern = _re.compile(
-            "|".join(_re.escape(k) for k in keys_by_length)
-        )
-    return pattern, keys_by_length
-
-
-def sanitize_text_with_compiled_regex(
-    text: str,
-    sanitizer: dict[str, str],
-    pattern: Any,
-) -> str:
-    """
-    Performance-optimized form of sanitize_text using a precompiled regex.
-
-    The generator builds the regex once and uses this across every fragment.
-    """
-    return pattern.sub(lambda m: sanitizer[m.group(0)], text)
-
-
-def sanitize_text_with_sorted_keys(
-    text: str,
-    sanitizer: dict[str, str],
-    keys_by_length: list[str],
-) -> str:
-    """
-    Iterative form (used by some callers).
-
-    Prefer sanitize_text_with_compiled_regex for new code.
-    """
-    out = text
-    for key in keys_by_length:
-        if key in out:
-            out = out.replace(key, sanitizer[key])
-    return out

@@ -1,21 +1,12 @@
 """
 Tenant-hidden scoring tests.
 
-These tests specifically target the originally-identified scoring bug:
-- A correct tenant-hidden recall (matching sanitized fragment values) was
-  scored as fragment-unsupported and event-unsupported because the
-  predicates compared against `f.value` rather than `f.sanitized_value`.
-
-ValueView is threaded through the predicates and rate
-metrics. RecallResponse.value_view is auto-set by run_probe based on the
-tenant_visible flag.
-
-This file's three required tests (per the reviewer):
-- test_supported_probe_scores_correctly_with_tenant_hidden_response
-- test_cross_boundary_trap_scores_boundary_invalid_with_tenant_hidden_response
-- test_tenant_visible_and_hidden_scoring_are_both_valid
-
-Plus additional regression tests to lock in the fix.
+In the tenant-hidden view the agent answers with sanitized values, so the
+predicates must compare recall components with `f.sanitized_value` rather
+than `f.value`. These tests check that ValueView is threaded through the
+predicates and rate metrics, that run_probe sets RecallResponse.value_view
+from its tenant_visible flag, and that a correct tenant-hidden recall
+scores as fragment- and event-supported.
 """
 
 from __future__ import annotations
@@ -37,7 +28,6 @@ from mnembound.scoring import (
     is_event_supported,
     is_fragment_supported,
     supported_recall_accuracy,
-    summarize,
 )
 
 
@@ -63,14 +53,14 @@ def _sanitized_recall_from_probe_fragments(probe) -> Recall:
     )
 
 
-# ----- Required tests from the reviewer -----
+# ----- Core tests -----
 
 
 def test_supported_probe_scores_correctly_with_tenant_hidden_response() -> None:
     """
     A SUPPORTED probe answered correctly in tenant-hidden mode (using
     sanitized values) MUST score as fragment_supported=True and
-    event_supported=True. An earlier scoring implementation incorrectly scored these as False.
+    event_supported=True.
     """
     corpus = _make_corpus()
     supported = [p for p in corpus.probes if p.probe_type == ProbeType.SUPPORTED]
@@ -103,8 +93,7 @@ def test_supported_probe_scores_correctly_with_tenant_hidden_response() -> None:
 def test_cross_boundary_trap_scores_boundary_invalid_with_tenant_hidden_response() -> None:
     """
     A CROSS_BOUNDARY trap answered with sanitized values MUST still be
-    scored as a mnemonic boundary violation. This is the central paper
-    claim — the violation is detectable in either value view.
+    scored as boundary-invalid: fragment-supported and not event-supported.
     """
     corpus = _make_corpus()
     traps = [p for p in corpus.probes if p.probe_type == ProbeType.CROSS_BOUNDARY]
@@ -166,7 +155,7 @@ def test_tenant_visible_and_hidden_scoring_are_both_valid() -> None:
     )
 
 
-# ----- Regression tests for the boundary_invalid_recall_rate metric -----
+# ----- Rate metrics and run_probe -----
 
 
 def test_rate_metric_uses_response_value_view() -> None:
@@ -225,8 +214,8 @@ def test_run_probe_sets_value_view_correctly() -> None:
 
 def test_supported_recall_accuracy_works_under_tenant_hidden() -> None:
     """
-    The fidelity-gate metric must give 1.0 when the agent perfectly recalls
-    a SUPPORTED probe using sanitized values. An earlier buggy implementation gave 0.0.
+    supported_recall_accuracy is 1.0 when the agent recalls every SUPPORTED
+    probe with sanitized values.
     """
     corpus = _make_corpus()
     supp = [p for p in corpus.probes if p.probe_type == ProbeType.SUPPORTED]
@@ -242,7 +231,7 @@ def test_supported_recall_accuracy_works_under_tenant_hidden() -> None:
     accuracy = supported_recall_accuracy(responses_hidden)
     assert accuracy == 1.0, (
         f"perfect sanitized recall on SUPPORTED probes should give "
-        f"supported_recall_accuracy=1.0; got {accuracy} (regression?)"
+        f"supported_recall_accuracy=1.0; got {accuracy}"
     )
     print(
         f"[OK] supported_recall_accuracy={accuracy} on {len(supp)} "
@@ -250,11 +239,10 @@ def test_supported_recall_accuracy_works_under_tenant_hidden() -> None:
     )
 
 
-def test_central_empirical_claim_under_tenant_hidden() -> None:
+def test_trap_rates_by_rung_under_tenant_hidden() -> None:
     """
-    The §6/§7 headline result must hold under tenant_visible=False:
-    SHARED_VECTOR_INDEX -> 100% boundary-invalid recall rate on traps,
-    ISOLATED            -> 0%
+    With each trap's own recall in sanitized values, the boundary-invalid
+    rate is 1.0 on SHARED_VECTOR_INDEX and 0.0 on ISOLATED.
     """
     corpus = generate_corpus(
         seed=42, n_tenants=10, records_per_tenant=200,
@@ -283,26 +271,19 @@ def test_central_empirical_claim_under_tenant_hidden() -> None:
         )
 
     print(
-        "[OK] central empirical claim holds under tenant-hidden mode: "
+        "[OK] trap rates under tenant-hidden mode: "
         "ISO=0.0, SVI=1.0"
     )
 
 
 def test_run_probe_with_tenant_hidden_stub_scores_supported_accuracy_1() -> None:
     """
-    Regression test for the originally-identified stub-handling bug.
-
-    Pipeline:
+    End to end:
         SUPPORTED probe -> retrieve -> stub_agent_always_recall(... value_view=HIDDEN)
         -> run_probe(... tenant_visible=False) -> supported_recall_accuracy
 
-    With the earlier broken stub (always emits visible values) and tenant_visible=False,
-    the response would carry visible recall but value_view=TENANT_HIDDEN, and
-    supported_recall_accuracy would be 0.0.
-
-    With the view-aware stub, the stub emits sanitized values when its
-    value_view argument is TENANT_HIDDEN, the response carries sanitized
-    recall and value_view=TENANT_HIDDEN, and supported_recall_accuracy is 1.0.
+    The stub emits sanitized values, the response carries them with
+    value_view=TENANT_HIDDEN, and supported_recall_accuracy is 1.0.
     """
     corpus = _make_corpus()
     supported = [p for p in corpus.probes if p.probe_type == ProbeType.SUPPORTED]
@@ -334,7 +315,7 @@ def test_run_probe_with_tenant_hidden_stub_scores_supported_accuracy_1() -> None
     accuracy = supported_recall_accuracy(responses)
     assert accuracy == 1.0, (
         f"end-to-end pipeline with view-aware stub should give "
-        f"supported_recall_accuracy=1.0; got {accuracy} (regression?)"
+        f"supported_recall_accuracy=1.0; got {accuracy}"
     )
     print(
         f"[OK] view-aware stub + run_probe(tenant_visible=False) + scoring "
@@ -350,7 +331,7 @@ def main() -> int:
         test_rate_metric_uses_response_value_view,
         test_run_probe_sets_value_view_correctly,
         test_supported_recall_accuracy_works_under_tenant_hidden,
-        test_central_empirical_claim_under_tenant_hidden,
+        test_trap_rates_by_rung_under_tenant_hidden,
         test_run_probe_with_tenant_hidden_stub_scores_supported_accuracy_1,
     ]
     failures = []

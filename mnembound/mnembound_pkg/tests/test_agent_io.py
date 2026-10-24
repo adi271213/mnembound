@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from mnembound.agent_io import (
     build_prompt,
     parse_agent_response,
-    render_fragments_as_evidence,
     run_probe,
     stub_agent_always_abstain,
     stub_agent_always_recall,
@@ -256,7 +255,7 @@ def test_run_probe_requires_tenant_visible_keyword() -> None:
     stub = stub_agent_always_abstain()
     # Missing tenant_visible should raise.
     try:
-        run_probe(p, result, stub)  # type: ignore[call-arg]
+        run_probe(p, result, stub)
         raise AssertionError("run_probe should require tenant_visible keyword")
     except TypeError:
         pass

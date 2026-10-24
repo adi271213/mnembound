@@ -7,34 +7,29 @@ more than one tenant. SOC examples:
 - A shared IP that participated in events at multiple MSSP clients
   (e.g., a phishing C2 server that hit clientA on Monday and clientB on
   Tuesday).
-- A malware family observed at multiple sites.
+- A malware sample (hash) observed at multiple sites.
 - A CVE referenced by alerts at multiple sites.
 - A vendor product (Vendor-X EDR) mentioned in alerts at multiple sites.
 - A named threat actor attributed to incidents at multiple sites.
-- A near-timestamp correlation (not a bridge entity per se, but a
-  proximity signal that an aggregator might exploit).
 
-Bridges are the realism layer of the benchmark. Without them, a cross-
-boundary trap probe looks like an arbitrary stitched recall ("user A from
-clientA, action B from clientB, ..."). With bridges, the trap looks like
-the kind of confusion a real MSSP aggregator might produce: "a host scan
-from 198.51.100.42 was followed by an authentication failure on the same
-IP at clientB ten minutes later." The composed recall is still
-event-false (no single event has all five components), but it now has a
-plausible-looking thread of bridge evidence.
+With prefer_bridge_linked_traps, each cross-boundary trap is built from
+source records that share a bridge entity, so the bridge links the trap's
+records in the store. A bridge in Record.extra is never rendered into
+fragment text; a slot bridge replaces the slot value in the record's text.
+The agent therefore sees a trap's bridge only in a fragment whose text
+names a slot bridge (analysis/corpus_stats.py counts these fragments for
+the released traps).
 
 Design:
 
-1. Two density knobs:
-   - `bridge_density_extra` (default 5%): fraction of records that carry a
-     bridge entity in their `Record.extra` field (as auxiliary context).
-   - `bridge_density_slot` (default 0%): fraction of records that have a
-     bridge entity in their subject or object slot. Off by default
-     because it changes record semantics; on for realism-heavy
-     experiments.
+1. Two densities (BridgeDensitySpec):
+   - `extra` (default 5%): fraction of records that carry a bridge entity
+     in their `Record.extra` field.
+   - `slot` (default 0%): fraction of records that have a bridge entity in
+     their subject or object slot. Off by default because it changes
+     record semantics; the released corpora use 1%.
 
-2. Five bridge categories (no near_timestamp; that is handled as a
-   proximity signal at probe-construction time, not as a bridge entity):
+2. Five bridge categories:
    - shared_ip
    - malware_hash
    - cve
@@ -44,10 +39,10 @@ Design:
 3. Each bridge category has a configurable pool size. Bridges are
    sampled deterministically from these pools.
 
-4. Validation: every bridge must appear in the BridgePools whitelist.
-   The existing `assert_record_entities_in_pool_or_bridges` check covers
-   slot-bridges; a new `assert_record_extra_bridges_are_whitelisted`
-   check covers extra-bridges.
+4. Validation: `validation.assert_record_entities_in_pool_or_bridges`
+   requires every subject and object outside the tenant's pool, and so
+   every slot bridge, to be in the BridgePools whitelist. Extra bridges
+   are drawn from the same pools.
 
 5. Whitelist generation: `build_bridge_pools(seed, sizes)` returns a
    BridgePools whose entities are deterministic given the seed.
@@ -61,11 +56,9 @@ from dataclasses import dataclass
 from mnembound.validation import BridgePools
 
 
-# Default bridge pool sizes. Calibrated so that at default density (5%
-# extra) and a 10-tenant × 500-record corpus, every bridge entity is
-# reused across ~2-5 records on average, which is the SOC-realistic
-# range. (Lower reuse and bridges look incidental; higher reuse and they
-# look like a single attacker dominating the dataset.)
+# Default bridge pool sizes: 125 entities. At 5% extra density on a
+# 10-tenant × 500-record corpus, 250 records carry an extra bridge, two per
+# entity on average.
 DEFAULT_BRIDGE_POOL_SIZES: dict[str, int] = {
     "shared_ip": 50,
     "malware_hash": 30,
@@ -91,10 +84,8 @@ _BRIDGE_TO_SLOT: dict[str, str] = {
 }
 
 
-# Categories of bridges that may appear in a slot. We restrict slot-
-# bridges to categories that naturally fill a subject or object position
-# in a SOC event. Currently all five qualify; this list exists so future
-# bridge categories (e.g., near_timestamp) can be added as extra-only.
+# Categories of bridges that may appear in a subject or object slot: all
+# five.
 SLOT_ELIGIBLE_BRIDGE_TYPES: frozenset[str] = frozenset({
     "shared_ip", "malware_hash", "cve", "vendor", "threat_actor",
 })
@@ -104,14 +95,13 @@ SLOT_ELIGIBLE_BRIDGE_TYPES: frozenset[str] = frozenset({
 
 
 def _shared_ip(i: int) -> str:
-    """RFC-5737 documentation range, padded to make 50 distinct entries."""
-    # 198.51.100.0/24 has 256 usable addresses.
+    """An address of the RFC 5737 documentation range 198.51.100.0/24."""
     return f"ip:198.51.100.{i % 256}"
 
 
 def _malware_hash(i: int, rng: random.Random) -> str:
     """A 64-char hex string that looks like SHA-256."""
-    return f"hash:" + "".join(rng.choice("0123456789abcdef") for _ in range(64))
+    return "hash:" + "".join(rng.choice("0123456789abcdef") for _ in range(64))
 
 
 def _cve(year: int, i: int) -> str:
@@ -162,12 +152,12 @@ class BridgeDensitySpec:
             raise ValueError(f"extra density must be 0..1, got {self.extra}")
         if not (0.0 <= self.slot <= 1.0):
             raise ValueError(f"slot density must be 0..1, got {self.slot}")
-        # Cap each density at 0.15 (the documented ablation range). Higher
-        # values are technically allowed but produce unrealistic corpora.
+        # Densities above 0.15 are rejected: such corpora are dominated by
+        # bridge entities.
         if self.extra > 0.15:
             raise ValueError(
                 f"extra density {self.extra} exceeds the realism cap 0.15; "
-                "if you want a higher density, edit bridges.py and document why"
+                "raise the cap in bridges.py to allow it"
             )
         if self.slot > 0.15:
             raise ValueError(
@@ -334,7 +324,7 @@ def _sample_category(
         ]
 
     if not candidates:
-        return "shared_ip"  # safe fallback; assign_bridges will get None and skip
+        return "shared_ip"  # fallback: the empty pool gives no entity, and the record is skipped
     names = [c for c, _ in candidates]
     weights = [w for _, w in candidates]
     return rng.choices(names, weights=weights, k=1)[0]

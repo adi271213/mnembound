@@ -3,7 +3,7 @@ Prompt-mode and summary-merge-mode tests.
 
 Verifies:
 - PromptMode.NEUTRAL produces a system prompt without composition warnings.
-- PromptMode.CAUTIOUS produces the legacy cautious system prompt verbatim.
+- PromptMode.CAUTIOUS produces a system prompt with the composition warning.
 - SummaryMergeMode.COLLAPSED produces a single bullet list with no
   per-tenant grouping signal.
 - SummaryMergeMode.PER_CLIENT_BLOCKS produces multiple per-tenant blocks.
@@ -54,7 +54,7 @@ def test_neutral_prompt_has_no_composition_warnings() -> None:
         p, result, tenant_visible=False, prompt_mode=PromptMode.NEUTRAL
     )
     assert "Do not combine information from different events" not in prompt.system
-    assert "abstain" in prompt.system.lower()  # still mentions abstaining as an option
+    assert "abstain" in prompt.system.lower()  # declining is offered in both prompts
     assert prompt.prompt_mode == PromptMode.NEUTRAL
     print("[OK] NEUTRAL prompt has no composition warnings")
 
@@ -129,8 +129,8 @@ def test_per_client_blocks_summary_has_tenant_grouping() -> None:
     text = render_summary_text(
         p, tenant_visible=False, mode=SummaryMergeMode.PER_CLIENT_BLOCKS
     )
-    # PER_CLIENT_BLOCKS: one or more "Summary of recent activity..." headers
-    # depending on how many tenants the trap spans.
+    # PER_CLIENT_BLOCKS: one "Summary of recent activity..." header per
+    # tenant; a trap spans at least two tenants.
     n_headers = text.count("Summary of recent activity for this client")
     assert n_headers >= 2, (
         f"PER_CLIENT_BLOCKS for a CROSS_BOUNDARY trap should have ≥2 "
@@ -170,13 +170,13 @@ def test_run_probe_threads_summary_merge_mode() -> None:
     print("[OK] run_probe threads summary_merge_mode to prompt construction")
 
 
-# ----- Defaults are correct for the headline paper config -----
+# ----- Defaults -----
 
 
 def test_default_summary_mode_is_collapsed() -> None:
     """
-    The PER_CLIENT_BLOCKS implicit default was flagged as
-    suppressing the phenomenon. The current default is COLLAPSED.
+    Without summary_merge_mode, build_prompt renders the COLLAPSED
+    summary.
     """
     corpus = _make_corpus()
     traps = [p for p in corpus.probes if p.probe_type == ProbeType.CROSS_BOUNDARY]
@@ -190,18 +190,17 @@ def test_default_summary_mode_is_collapsed() -> None:
     print("[OK] default summary_merge_mode is COLLAPSED")
 
 
-def test_default_prompt_mode_is_cautious_for_backwards_compat() -> None:
+def test_default_prompt_mode_is_cautious() -> None:
     """
-    Default prompt_mode remains CAUTIOUS for backwards-compatibility. The
-    smoke runner switches to NEUTRAL via --prompt-mode neutral when the
-    cautious variant suppresses the phenomenon.
+    The default prompt_mode of build_prompt is CAUTIOUS; run_paper.py and
+    run_smoke.py pass the prompt mode explicitly.
     """
     corpus = _make_corpus()
     p = corpus.probes[0]
     result = retrieve(Rung.SHARED_VECTOR_INDEX, p, corpus)
     prompt = build_prompt(p, result, tenant_visible=False)
     assert prompt.prompt_mode == PromptMode.CAUTIOUS
-    print("[OK] default prompt_mode is CAUTIOUS (backwards-compatible)")
+    print("[OK] default prompt_mode is CAUTIOUS")
 
 
 def main() -> int:
@@ -213,7 +212,7 @@ def main() -> int:
         test_per_client_blocks_summary_has_tenant_grouping,
         test_run_probe_threads_summary_merge_mode,
         test_default_summary_mode_is_collapsed,
-        test_default_prompt_mode_is_cautious_for_backwards_compat,
+        test_default_prompt_mode_is_cautious,
     ]
     failures = []
     for t in tests:

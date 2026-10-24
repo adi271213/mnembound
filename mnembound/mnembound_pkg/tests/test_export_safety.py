@@ -5,10 +5,10 @@ Mechanically verify that the export functions in `mnembound.export` do
 not accidentally leak store-level metadata into the FragmentViewBundle
 intended for V_frag baselines.
 
-The §4.2 abstraction holds at the IMPLEMENTATION level only if no
+The fragment-level abstraction holds at the IMPLEMENTATION level only if no
 fragment-view dict contains any forbidden key (record_id, boundary_id,
-event_id, tenant_id, salt, resolver, etc.). If a future refactor breaks
-this, these tests catch it before the artifact ships.
+event_id, tenant_id, salt, resolver, etc.); these tests check that none
+does.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def test_fragment_view_export_has_only_allowed_keys() -> None:
 
 
 def test_fragment_view_export_contains_no_forbidden_keys() -> None:
-    """Strict redundant check via assert_fragment_view_is_clean."""
+    """assert_fragment_view_is_clean accepts the fragment view in both modes."""
     corpus = _make_corpus()
     for tv in (True, False):
         bundle = export_fragment_view(corpus, tenant_visible=tv)
@@ -157,7 +157,7 @@ def test_bcesv_resolver_resolves_export_ids() -> None:
 
 
 def test_store_view_export_is_complete() -> None:
-    """Store view contains the full corpus state used by scoring/validation."""
+    """Store view carries the records, fragments, resolver, entity pools, sanitizer and salt."""
     corpus = _make_corpus()
     bundle = export_store_view(corpus)
 
@@ -180,7 +180,7 @@ def test_fragment_view_dicts_are_immutable() -> None:
     bundle = export_fragment_view(corpus, tenant_visible=False)
     sample = bundle.fragments[0]
     try:
-        sample["record_id"] = "leak"  # type: ignore[index]
+        sample["record_id"] = "leak"
         raise AssertionError("mutation should have raised TypeError")
     except TypeError:
         pass

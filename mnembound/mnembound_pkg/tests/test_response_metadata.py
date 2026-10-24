@@ -1,8 +1,8 @@
 """
 Response metadata tests.
 
-Verifies the four reviewer-identified fixes:
-1. response_to_dict() serializes value_view (and the other new metadata).
+Verifies four properties of the response metadata:
+1. response_to_dict() serializes value_view and the other metadata fields.
 2. summarize_by_rung groups responses by rung correctly.
 3. run_probe captures raw model output and parse errors.
 4. RecallResponse carries rung/model/seed/tenant_visible metadata.
@@ -24,7 +24,6 @@ from mnembound.agent_io import (
 )
 from mnembound.generator import generate_corpus
 from mnembound.retrieval import ALL_RUNGS, Rung, retrieve
-from mnembound.schema import ProbeType
 from mnembound.scoring import (
     RecallResponse,
     ValueView,
@@ -46,11 +45,11 @@ def _make_corpus():
     )
 
 
-# ----- Item 1: value_view in response_to_dict -----
+# ----- value_view in response_to_dict -----
 
 
 def test_response_to_dict_includes_value_view() -> None:
-    """The critical reviewer fix: value_view in serialized output."""
+    """value_view is included in the serialized output."""
     corpus = _make_corpus()
     p = corpus.probes[0]
     result = retrieve(Rung.SHARED_VECTOR_INDEX, p, corpus)
@@ -96,14 +95,13 @@ def test_response_to_dict_value_view_round_trips_through_jsonl() -> None:
     print("[OK] value_view round-trips through JSONL")
 
 
-# ----- Item 2: per-rung scoring -----
+# ----- Per-rung scoring -----
 
 
 def test_summarize_by_rung_groups_by_rung_field() -> None:
     """
-    summarize_by_rung produces one MetricSummary per rung. The §13 pass
-    gates require these per-rung values; a combined summarize() would
-    average them and hide the rung-to-rung gap that is the paper claim.
+    summarize_by_rung produces one MetricSummary per rung; a combined
+    summarize() would mix the rungs.
     """
     corpus = generate_corpus(
         seed=42, n_tenants=10, records_per_tenant=200,
@@ -127,15 +125,12 @@ def test_summarize_by_rung_groups_by_rung_field() -> None:
     assert set(by_rung.keys()) == {r.value for r in ALL_RUNGS}, (
         f"summarize_by_rung missed rungs: {set(by_rung.keys())}"
     )
-    # The central empirical claim, per-rung:
+    # The stub recalls a trap only where all five fragments are shown:
     assert by_rung["isolated"].boundary_invalid_recall_rate == 0.0
     assert by_rung["boundary_preserving_topk"].boundary_invalid_recall_rate == 0.0
     assert by_rung["shared_vector_index"].boundary_invalid_recall_rate == 1.0
     assert by_rung["summary_merge"].boundary_invalid_recall_rate == 1.0
-    print(
-        "[OK] summarize_by_rung: ISO=0.0, BP=0.0, SVI=1.0, SM=1.0 "
-        "(the gate metrics)"
-    )
+    print("[OK] summarize_by_rung: ISO=0.0, BP=0.0, SVI=1.0, SM=1.0")
 
 
 def test_summarize_by_rung_buckets_no_rung_metadata_separately() -> None:
@@ -183,7 +178,7 @@ def test_filter_responses_works_by_rung_model_seed() -> None:
     print("[OK] filter_responses slices by rung/model/seed correctly")
 
 
-# ----- Item 3: raw_text and parse_error captured -----
+# ----- raw_text and parse_error captured -----
 
 
 def test_run_probe_captures_raw_text_on_successful_parse() -> None:
@@ -231,7 +226,7 @@ def test_run_probe_captures_abstain_reason() -> None:
     print("[OK] abstain_reason captured when agent abstains explicitly")
 
 
-# ----- Item 4: rung/model/seed/tenant_visible metadata -----
+# ----- rung/model/seed/tenant_visible metadata -----
 
 
 def test_run_probe_populates_rung_from_retrieval_result() -> None:

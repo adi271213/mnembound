@@ -5,12 +5,14 @@ This module bridges between MnemBound's `Probe` / `RetrievalResult` and the
 LLM agent that produces a `RecallResponse`. It provides:
 
 - `build_prompt(probe, retrieval_result, *, tenant_visible)`: constructs
-  the agent prompt. JSON-output schema enforced.
+  the system and user prompts; the system prompt asks for one JSON object
+  in one of the two forms below.
 - `parse_agent_response(text)`: parses the agent's text into a structured
   Recall or abstention.
 - `run_probe(probe, retrieval_result, agent_fn, *, tenant_visible)`:
-  full pipeline. The agent_fn is a callable (e.g., your vllm client) that
-  takes a prompt string and returns the model's text output.
+  full pipeline. The agent_fn is a callable (e.g., an OpenAI-compatible
+  client) that takes the system and user prompts and returns the model's
+  text output.
 
 JSON output schema
 ------------------
@@ -28,21 +30,23 @@ or
 
   {"abstain": true, "reason": "..."}
 
-The parser is FORGIVING:
+The parser is forgiving:
 - Accepts JSON wrapped in ```json fences.
-- Strips leading commentary before the first '{'.
+- Otherwise parses the text from the first '{' to the last '}'.
 - Tolerates missing "reason" on abstention.
-- Returns a parse error (not a crash) if the output is unparseable; the
-  pipeline then treats the response as an abstention with a parse-failure
-  reason. This avoids losing experimental data to malformed LLM output.
+- Returns a parse error (not a crash) when the output is neither an
+  abstention nor a recall whose five components are strings, for example
+  invalid JSON or a recall with a missing or null component. run_probe
+  records such a response as abstained, with parse_error set and no
+  abstain_reason.
 
 Tenant visibility
 -----------------
-The prompt rendering takes a `tenant_visible` flag. The paper's primary
-experimental condition is tenant_visible=False, and `run_probe` requires
-this as a keyword argument (no default) for the same reason
-`view_for_v_frag` requires it: silently exposing tenant identity to the
-agent corrupts the audit-invisibility result.
+The prompt rendering takes a `tenant_visible` flag, which `run_probe`
+requires as a keyword argument (no default), as `view_for_v_frag` does.
+The released runs use tenant_visible=False: the evidence is rendered from
+sanitized fragment text, and the question anchor is sanitized whenever the
+probe holds the fragment of the recall's subject (see build_prompt).
 """
 
 from __future__ import annotations
@@ -53,9 +57,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
-from mnembound.retrieval import RetrievalResult, Rung, render_summary_text
+from mnembound.retrieval import RetrievalResult, Rung, SummaryMergeMode, render_summary_text
 from mnembound.schema import (
-    ALL_ROLES,
     ComponentRole,
     Fragment,
     Probe,
@@ -79,12 +82,10 @@ class PromptMode(str, Enum):
 
     CAUTIOUS: includes explicit rules telling the agent to avoid combining
         information across events and to abstain on ambiguous evidence.
-        Useful as a "simple-instruction mitigation" baseline. If CAUTIOUS
-        reduces but does not eliminate the phenomenon, that is itself a
-        useful paper result.
+        A simple-instruction mitigation.
 
-    Choice for the headline §7 / §9 numbers: NEUTRAL. The cautious variant
-    is reported as an ablation showing how much trivial prompting helps.
+    The paper's headline conditions use NEUTRAL; CAUTIOUS is reported as a
+    mitigation (§7.2).
     """
 
     NEUTRAL = "neutral"
@@ -145,10 +146,6 @@ _PROMPT_BY_MODE: dict[PromptMode, str] = {
 }
 
 
-# Backwards-compatible alias (cautious was the legacy default prompt).
-_SYSTEM_PROMPT = _SYSTEM_PROMPT_CAUTIOUS
-
-
 @dataclass(frozen=True)
 class PromptBundle:
     """A built prompt with both the system and user parts split out."""
@@ -167,10 +164,7 @@ def render_fragments_as_evidence(
     Render a list of fragments as a numbered evidence block.
 
     Each line is one fragment, formatted as:
-        [N] (role) text
-
-    The opaque public provenance ID is included in brackets so the agent
-    can reference fragments by ID if needed.
+        [N prov=<first 20 characters of the handle>] (role) text
     """
     lines: list[str] = []
     for i, f in enumerate(fragments, start=1):
@@ -187,7 +181,7 @@ def build_prompt(
     *,
     tenant_visible: bool,
     prompt_mode: PromptMode = PromptMode.CAUTIOUS,
-    summary_merge_mode: "SummaryMergeMode | None" = None,
+    summary_merge_mode: SummaryMergeMode | None = None,
 ) -> PromptBundle:
     """
     Construct the prompt for an agent run on one probe under one rung.
@@ -197,29 +191,25 @@ def build_prompt(
 
     For SUMMARY_MERGE: the user prompt contains the rendered summary
     blob instead of individual fragments. The `summary_merge_mode`
-    argument selects between per-client-block and collapsed rendering
+    argument selects the collapsed or the per-client-blocks aggregator
     (see mnembound.retrieval.SummaryMergeMode).
 
-    The agent is also told what to identify: the subject of the recall
-    (revealed to the agent as the "question anchor"). This is a small
-    leak — the agent learns who the recall is about — but it's necessary
-    because otherwise the probe is underspecified ("identify the event"
-    is ambiguous when many events are in evidence). All paper rungs
-    receive the same anchor, so the audit-invisibility comparison is
-    fair.
+    The question names the subject of the probe's recall (the "anchor"),
+    because "identify the event" is ambiguous when the evidence holds
+    several events; every rung of a probe receives the same anchor. With
+    tenant_visible=False the anchor is the sanitized value of the probe's
+    fragment that carries the recall's subject. A probe without such a
+    fragment (most absent probes, and partial probes that lack the subject
+    role) keeps the raw, tenant-visible subject value as its anchor.
 
     Args:
-        prompt_mode: Which system-prompt variant to use. Default CAUTIOUS
-            for backwards-compatibility; the NEUTRAL variant is recommended for the
-            headline §7/§9 numbers.
-        summary_merge_mode: For SUMMARY_MERGE only. Default COLLAPSED for
-            the headline summary-merge condition (no per-client structural
-            hints); PER_CLIENT_BLOCKS preserves "Summary of recent activity
-            for this client:" framing.
+        prompt_mode: Which system-prompt variant to use. Default CAUTIOUS;
+            the headline conditions use NEUTRAL.
+        summary_merge_mode: For SUMMARY_MERGE only. Default COLLAPSED, the
+            aggregator of the headline conditions (one bullet list);
+            PER_CLIENT_BLOCKS renders one block per tenant, headed
+            "Summary of recent activity for this client:".
     """
-    # Local import to avoid forward-reference issues at class definition.
-    from mnembound.retrieval import SummaryMergeMode
-
     if summary_merge_mode is None:
         summary_merge_mode = SummaryMergeMode.COLLAPSED
 
@@ -240,10 +230,9 @@ def build_prompt(
         )
         evidence_label = "Evidence"
 
-    # The "anchor" is the subject value the agent is asked about. Use
-    # the recall.subject directly; if tenant-hidden, the agent has
-    # already seen the sanitized form in the evidence, so we sanitize
-    # the anchor too.
+    # The anchor is the recall's subject; in the tenant-hidden view it is
+    # replaced by the sanitized value of the probe's subject fragment when
+    # the probe has one.
     if tenant_visible:
         anchor = probe.recall.subject
     else:
@@ -280,10 +269,8 @@ class ParsedResponse:
     """
     Result of parsing an agent's text output.
 
-    Exactly one of `recall` or `abstain_reason` is non-None.
-
-    If parsing fails entirely, `parse_error` is set and the pipeline
-    treats this as an abstention with a parse-failure reason.
+    Exactly one of `recall`, `abstain_reason` and `parse_error` is
+    non-None. run_probe records a response with `parse_error` as abstained.
     """
 
     recall: Recall | None
@@ -318,9 +305,9 @@ def parse_agent_response(text: str) -> ParsedResponse:
     """
     Parse an agent's text output into a Recall or an abstention.
 
-    The parser is forgiving (see module docstring). On unrecoverable
-    failure, returns a ParsedResponse with parse_error set; the pipeline
-    treats this as an abstention with a parse-failure reason.
+    The parser is forgiving (see module docstring). When the output is
+    neither an abstention nor a recall whose five components are strings,
+    returns a ParsedResponse with parse_error set.
     """
     candidate = _extract_json_candidate(text)
     try:
@@ -402,8 +389,8 @@ def parse_agent_response(text: str) -> ParsedResponse:
 
 
 # An agent function takes (system_prompt, user_prompt) and returns the
-# model's text output. Concrete implementations will wrap vllm/Anthropic
-# API calls; tests use deterministic stubs.
+# model's text output. run_paper.py and run_smoke.py wrap an
+# OpenAI-compatible endpoint; the tests use deterministic stubs.
 AgentFn = Callable[[str, str], str]
 
 
@@ -416,7 +403,7 @@ def run_probe(
     model: str | None = None,
     seed: int | None = None,
     prompt_mode: PromptMode = PromptMode.CAUTIOUS,
-    summary_merge_mode: "SummaryMergeMode | None" = None,
+    summary_merge_mode: SummaryMergeMode | None = None,
 ) -> RecallResponse:
     """
     Run one probe through the agent and parse the response.
@@ -429,19 +416,14 @@ def run_probe(
             tenant-visible fragment text or sanitized text.
         model: Optional model identifier; stored on the returned response.
         seed: Optional experiment seed; stored on the returned response.
-        prompt_mode: NEUTRAL or CAUTIOUS. Default CAUTIOUS for backwards-compatibility;
-            the NEUTRAL variant is recommended for the headline §7/§9
-            numbers because the cautious variant may suppress the
-            phenomenon you are trying to measure.
-        summary_merge_mode: For SUMMARY_MERGE only. Default COLLAPSED
-            (recommended for the headline summary-merge condition).
+        prompt_mode: NEUTRAL or CAUTIOUS. Default CAUTIOUS; the headline
+            conditions use NEUTRAL.
+        summary_merge_mode: For SUMMARY_MERGE only. Default COLLAPSED, the
+            aggregator of the headline conditions.
 
     Returns:
         RecallResponse with experiment metadata populated.
     """
-    # Local import to avoid forward reference at decoration time.
-    from mnembound.retrieval import SummaryMergeMode
-
     if summary_merge_mode is None:
         summary_merge_mode = SummaryMergeMode.COLLAPSED
 
@@ -532,17 +514,14 @@ def stub_agent_always_recall(
     - TENANT_VISIBLE: emit the probe's recall verbatim.
     - TENANT_HIDDEN: look up each recall component's matching fragment in
       the retrieval set and emit its sanitized_value. If a component has
-      no matching fragment in the retrieval set (e.g., PARTIAL probes
-      missing roles, ABSENT probes' swapped component), the stub abstains —
-      a perfect-but-honest agent would not invent the sanitized form of a
-      value it never saw.
+      no matching fragment in the retrieval set (e.g., the missing roles of
+      a PARTIAL probe, or the components an ABSENT probe's evidence lacks),
+      the stub abstains: an agent cannot know the sanitized form of a value
+      it never saw.
 
-    Rationale: an earlier stub emitted visible values regardless of
-    the view. Used in conjunction with run_probe(tenant_visible=False),
-    this produced a response with value_view=TENANT_HIDDEN containing
-    visible recall values — which scored as fragment-unsupported because
-    visible values don't match sanitized_value comparisons. The fix is to
-    make the stub emit values in the view its caller specifies.
+    The stub answers in the value view of its caller: a tenant-hidden
+    response holding tenant-visible values would never match the
+    sanitized fragment values and would score as fragment-unsupported.
     """
     if value_view == ValueView.TENANT_VISIBLE:
         return json.dumps({
@@ -601,28 +580,3 @@ def stub_agent_always_abstain(reason: str = "stub abstention") -> AgentFn:
         return json.dumps({"abstain": True, "reason": reason})
 
     return _abstain
-
-
-def make_stub_agent_from_probe(
-    probe: Probe,
-    retrieval_result: RetrievalResult,
-    *,
-    value_view: ValueView,
-) -> AgentFn:
-    """
-    Build a stub AgentFn that returns the given probe's recall, faithful
-    to the specified value view.
-
-    Args:
-        probe: The probe to recall.
-        retrieval_result: The retrieval result the agent would see.
-        value_view: REQUIRED keyword. Must match the `tenant_visible`
-            flag passed to run_probe.
-    """
-
-    def _stub(system: str, user: str) -> str:
-        return stub_agent_always_recall(
-            probe, retrieval_result, value_view=value_view
-        )
-
-    return _stub
