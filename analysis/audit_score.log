@@ -1,0 +1,23 @@
+Total sampled rows: 100
+Labeled rows:       100
+
+Agreement rate:     100/100 = 100.0%
+
+Per-stratum agreement:
+  absent                         11/11 = 100.0%
+  cross_boundary_INVALID         40/40 = 100.0%
+  cross_boundary_SAFE            20/20 = 100.0%
+  partial                        9/9 = 100.0%
+  supported                      20/20 = 100.0%
+
+Confusion matrix (scorer rows, human columns):
+                ABSTAIN     INVALID  PARSE_FAIL      RECALL        SAFE
+ABSTAIN                5           0           0           0           0
+INVALID                0          40           0           0           0
+PARSE_FAIL             0           0           2           0           0
+RECALL                 0           0           0          35           0
+SAFE                   0           0           0           0          18
+
+Cohen's kappa:     1.000
+Interpretation:    near-perfect agreement (Landis & Koch, 1977)
+

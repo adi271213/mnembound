@@ -1,28 +1,33 @@
 """
-audit_score.py — score the completed manual audit.
+audit_score.py: the manual scorer audit (§7.4, R3; Appendix F).
 
-Run after audit_sample.csv has been filled in by hand. Computes:
+Reads the labeled audit sample (analysis/audit_sample.csv by default) and
+prints the agreement between the HARDENED scorer's decision and the manual
+label: the overall rate, the rate per stratum, the confusion matrix, Cohen's
+kappa with the Landis and Koch interpretation, and any disagreements. The
+released labels were assigned with the scorer's decision visible, so the
+agreement measures consistency with the scorer, not independent validation.
 
-  - agreement rate (paper-ready: "Manual audit: substring rescorer agreed
-    with manual labels on X/100 sampled responses")
-  - per-stratum breakdown
-  - confusion matrix
-  - Cohen's kappa (chance-corrected agreement)
-  - disagreement details (for §7 appendix or footnote)
+Usage, from the repository root:
+  python3 analysis/audit_score.py > analysis/audit_score.log
+  python3 analysis/audit_score.py --csv "$tmp/relabel.csv"     (see analysis/audit_labeler.py)
 """
+import argparse
 import csv
 from pathlib import Path
 from collections import Counter, defaultdict
 
 
 def main():
+    ap = argparse.ArgumentParser(description="Score the manual scorer audit (Appendix F).")
+    ap.add_argument("--csv", type=Path, default=Path(__file__).resolve().parent / "audit_sample.csv",
+                    help="labeled audit sample")
+    args = ap.parse_args()
     rows = []
-    csv_path = Path(__file__).resolve().parent / "audit_sample.csv"
-    with open(csv_path) as f:
+    with open(args.csv) as f:
         for r in csv.DictReader(f):
             rows.append(r)
 
-    # Filter to rows that have been labeled
     labeled = [r for r in rows if r.get("human_decision", "").strip()]
     n_total = len(rows)
     n_labeled = len(labeled)
@@ -31,17 +36,15 @@ def main():
     print()
 
     if n_labeled == 0:
-        print("No labeled rows yet. Fill in human_decision and agree columns "
-              "in audit_sample.csv, then re-run this script.")
+        print(f"No labeled rows in {args.csv}. Label them with analysis/audit_labeler.py, "
+              "then re-run this script.")
         return
 
-    # Agreement rate
     n_agree = sum(1 for r in labeled if r.get("agree", "").strip() == "1")
     print(f"Agreement rate:     {n_agree}/{n_labeled} = "
           f"{n_agree/n_labeled*100:.1f}%")
     print()
 
-    # Per-stratum
     def stratum(r):
         if r["probe_type"] == "cross_boundary":
             return ("cross_boundary_INVALID"
@@ -64,7 +67,6 @@ def main():
               f"  {s:30s} 0/0")
     print()
 
-    # Confusion matrix
     print("Confusion matrix (scorer rows, human columns):")
     decisions = sorted({r["scorer_decision"] for r in labeled} |
                        {r["human_decision"] for r in labeled})
@@ -81,9 +83,7 @@ def main():
         print(row)
     print()
 
-    # Cohen's kappa
     po = n_agree / n_labeled if n_labeled else 0
-    # Marginals
     scorer_marg = Counter(r["scorer_decision"] for r in labeled)
     human_marg = Counter(r["human_decision"] for r in labeled)
     pe = sum(
@@ -93,7 +93,6 @@ def main():
     if pe < 1.0:
         kappa = (po - pe) / (1 - pe)
         print(f"Cohen's kappa:     {kappa:.3f}")
-        # Interpretation guide
         if kappa >= 0.81:
             interp = "near-perfect agreement"
         elif kappa >= 0.61:
@@ -111,7 +110,6 @@ def main():
         print("Cohen's kappa:     undefined (pe = 1.0)")
     print()
 
-    # Disagreement details
     disagreements = [r for r in labeled
                      if r.get("agree", "").strip() != "1"]
     if disagreements:
