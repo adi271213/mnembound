@@ -1,0 +1,11 @@
+Table 1: boundary-invalid recall on cross-boundary trap probes, Wilson 95% intervals.
+Safe rungs: isolated, boundary_preserving_topk. Unsafe rungs: shared_vector_index, summary_merge.
+
+          Safe rungs (n=24 cells)            Unsafe rungs (n=24 cells)
+Cell-min  0/100=  0.0% [  0.0,   3.7]        97/100= 97.0% [ 91.5,  99.0]
+Cell-max  0/100=  0.0% [  0.0,   3.7]        100/100=100.0% [ 96.3, 100.0]
+Pooled    0/2400=  0.0% [  0.0,   0.2]       2378/2400= 99.1% [ 98.6,  99.4]
+
+Unsafe-rung cells at 100/100: 14 of 24
+Lowest lower bound over unsafe-rung cells: 91.5%
+Highest upper bound over safe-rung cells: 3.7%

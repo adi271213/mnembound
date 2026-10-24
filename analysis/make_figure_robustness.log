@@ -1,0 +1,12 @@
+Figure 5: boundary-invalid recall on unsafe-rung trap responses, 12 conditions pooled
+(a) by bridge category
+  Shared IP     798/804 = 99.25%
+  Malware hash  693/704 = 98.44%
+  CVE           332/332 = 100.00%
+  Vendor        348/352 = 98.86%
+  Threat actor  207/208 = 99.52%
+(b) by number of distinct boundaries spanned
+  2 boundaries  43/52 = 82.69%
+  3 boundaries  279/284 = 98.24%
+  4 boundaries  742/744 = 99.73%
+  5 boundaries  1314/1320 = 99.55%

@@ -1,206 +1,136 @@
 """
-corpus_stats.py — bridge density and trap-probe statistics
+corpus_stats.py: corpus and trap-probe statistics (Appendix I).
 
-For each condition in data/, computes statistics relevant to the
-cross-boundary trap construction:
+For each condition, writes data/<condition>/corpus_stats.json with
 
-  1. Total fragments / records / boundaries (sanity).
-  2. Bridge-context coverage: fraction of cross-boundary probes that
-     have a non-empty bridge_context.
-  3. Bridge category distribution across cross-boundary probes
-     (shared_ip, malware_hash, cve, vendor, threat_actor).
-  4. Distribution of distinct boundaries per cross-boundary probe.
-  5. Bridge reuse: per bridge entity, how many distinct boundaries
-     contain at least one probe referencing it.
+  n_fragments, n_records, n_boundaries   size of the fragment store
+  probes_by_type                         probes per type
+  cross_boundary_probes                  trap probes: how many carry a bridge
+                                         context, their bridge categories
+                                         (shared_ip, malware_hash, cve, vendor,
+                                         threat_actor), and the number of
+                                         distinct boundaries spanned by each
+                                         probe's five source fragments
+  bridge entities                        how many distinct bridge entities the
+                                         traps use and how many boundaries each
+                                         reaches
 
-Writes data/<condition>/corpus_stats.json per condition.
+and prints one row per condition followed by the same statistics over the
+distinct trap probes (the conditions that share a corpus seed share their
+probes, so 12 condition folders hold 300 distinct trap probes) and, for each
+distinct trap probe, how many of its five fragments show its bridge entity in
+their text.
 
-These statistics describe the deliberate bridge-based trap construction
-documented in mnembound/bridges.py:
-
-  - 5 bridge categories: shared_ip, malware_hash, cve, vendor, threat_actor
-  - default bridge_density_extra = 0.05 (5% of records carry a bridge
-    in Record.extra)
-  - bridge pools: 50 IPs, 30 hashes, 20 CVEs, 15 vendors, 10 actors
-
-The fragments.store.jsonl public view does NOT expose the Record.extra
-bridge tag; bridges are observable at probe construction time via the
-probe's bridge_context field. We therefore compute bridge density at
-the probe level rather than the fragment level. This matches the
-benchmark's threat model: the released store reveals only per-fragment
-public metadata, while bridge structure is observable to the trap
-constructor.
+Usage, from the repository root:
+  python3 analysis/corpus_stats.py > analysis/corpus_stats.log
 """
+import argparse
 import json
-import sys
+from collections import Counter, defaultdict
 from pathlib import Path
-from collections import defaultdict, Counter
+
+HERE = Path(__file__).resolve().parent
+BRIDGE_PREFIX = {"ip": "shared_ip", "hash": "malware_hash", "cve": "cve", "vendor": "vendor", "actor": "threat_actor"}
 
 
 def bridge_category(entity: str) -> str:
-    """Extract bridge category from an entity string like 'ip:198.51.100.7'."""
-    prefix = entity.split(":", 1)[0] if ":" in entity else entity
+    """Bridge category of an entity such as 'ip:198.51.100.7'."""
+    prefix = entity.split(":", 1)[0]
+    return BRIDGE_PREFIX.get(prefix, prefix)
+
+
+def load_jsonl(path):
+    with open(path) as f:
+        return [json.loads(line) for line in f]
+
+
+def stats_for_condition(condition_dir: Path) -> dict:
+    fragments = load_jsonl(condition_dir / "fragments.store.jsonl")
+    probes = load_jsonl(condition_dir / "probes.jsonl")
+    boundary_of = {f["public_provenance_id"]: f["boundary_id"] for f in fragments}
+    traps = [p for p in probes if p["probe_type"] == "cross_boundary"]
+    categories, spans = Counter(), Counter()
+    boundaries_of_bridge = defaultdict(set)
+    for p in traps:
+        bds = {boundary_of[pid] for pid in p["fragment_provenance_ids"]}
+        spans[len(bds)] += 1
+        for b in p.get("bridge_context", []):
+            categories[bridge_category(b)] += 1
+            boundaries_of_bridge[b] |= bds
+    with_bridge = sum(1 for p in traps if p.get("bridge_context"))
+    coverage = Counter(len(b) for b in boundaries_of_bridge.values())
     return {
-        "ip": "shared_ip",
-        "hash": "malware_hash",
-        "cve": "cve",
-        "vendor": "vendor",
-        "actor": "threat_actor",
-    }.get(prefix, prefix)
-
-
-def stats_for_condition(cond_dir: Path) -> dict:
-    """Compute bridge / probe statistics for one condition."""
-    frags_path = cond_dir / "fragments.store.jsonl"
-    probes_path = cond_dir / "probes.jsonl"
-    if not frags_path.exists():
-        return {"error": f"fragments.store.jsonl not found in {cond_dir}"}
-    if not probes_path.exists():
-        return {"error": f"probes.jsonl not found in {cond_dir}"}
-
-    # ---- Fragment sanity ----
-    pid2bd = {}
-    pid2ev = {}
-    boundaries = set()
-    records = set()
-    n_frags = 0
-    with frags_path.open() as f:
-        for line in f:
-            d = json.loads(line)
-            n_frags += 1
-            pid2bd[d["public_provenance_id"]] = d["boundary_id"]
-            pid2ev[d["public_provenance_id"]] = d.get("event_id")
-            boundaries.add(d["boundary_id"])
-            if d.get("event_id"):
-                records.add(d["event_id"])
-
-    # ---- Probe-level bridge stats ----
-    probes_by_type = Counter()
-    cb_probes = []
-    with probes_path.open() as f:
-        for line in f:
-            p = json.loads(line)
-            probes_by_type[p["probe_type"]] += 1
-            if p["probe_type"] == "cross_boundary":
-                cb_probes.append(p)
-
-    n_cb = len(cb_probes)
-    n_cb_with_bridge = sum(1 for p in cb_probes if p.get("bridge_context"))
-
-    # Category distribution: each cross-boundary probe lists its bridges
-    category_counts = Counter()
-    bridge_to_boundaries = defaultdict(set)
-    boundary_span_dist = Counter()
-
-    for p in cb_probes:
-        bridges = p.get("bridge_context", [])
-        for b in bridges:
-            category_counts[bridge_category(b)] += 1
-
-        # Distinct boundaries spanned by this probe's fragments
-        pids = p.get("fragment_provenance_ids", [])
-        bds = {pid2bd.get(pid) for pid in pids if pid in pid2bd}
-        bds.discard(None)
-        boundary_span_dist[len(bds)] += 1
-
-        # Track which boundaries each bridge entity is associated with
-        for b in bridges:
-            for bd in bds:
-                bridge_to_boundaries[b].add(bd)
-
-    # Per-bridge boundary-coverage stats
-    bridges_seen = len(bridge_to_boundaries)
-    coverage_dist = Counter(
-        len(bds) for bds in bridge_to_boundaries.values()
-    )
-    avg_coverage = (
-        sum(len(b) for b in bridge_to_boundaries.values()) / bridges_seen
-        if bridges_seen else 0.0
-    )
-
-    return {
-        "condition": cond_dir.name,
-        "n_fragments": n_frags,
-        "n_records": len(records),
-        "n_boundaries": len(boundaries),
-        "probes_by_type": dict(probes_by_type),
+        "condition": condition_dir.name,
+        "n_fragments": len(fragments),
+        "n_records": len({f["event_id"] for f in fragments}),
+        "n_boundaries": len({f["boundary_id"] for f in fragments}),
+        "probes_by_type": dict(Counter(p["probe_type"] for p in probes)),
         "cross_boundary_probes": {
-            "total": n_cb,
-            "with_bridge_context": n_cb_with_bridge,
-            "fraction_with_bridge_context": (
-                n_cb_with_bridge / n_cb if n_cb else 0.0
-            ),
-            "bridge_category_distribution": dict(category_counts),
-            "boundary_span_distribution": dict(sorted(boundary_span_dist.items())),
-            "mean_boundary_span": (
-                sum(k * v for k, v in boundary_span_dist.items()) / n_cb
-                if n_cb else 0.0
-            ),
+            "total": len(traps),
+            "with_bridge_context": with_bridge,
+            "fraction_with_bridge_context": with_bridge / len(traps),
+            "bridge_category_distribution": dict(categories),
+            "boundary_span_distribution": dict(sorted(spans.items())),
+            "mean_boundary_span": sum(k * v for k, v in spans.items()) / len(traps),
         },
-        "distinct_bridges_in_cross_boundary_probes": bridges_seen,
-        "bridge_boundary_coverage_distribution": dict(
-            sorted(coverage_dist.items())
-        ),
-        "mean_boundaries_per_bridge": avg_coverage,
-        "generator_design_parameters": {
-            "bridge_density_extra_default": 0.05,
-            "bridge_density_slot_default": 0.0,
-            "bridge_categories": [
-                "shared_ip", "malware_hash", "cve", "vendor", "threat_actor"
-            ],
-            "default_bridge_pool_sizes": {
-                "shared_ip": 50,
-                "malware_hash": 30,
-                "cve": 20,
-                "vendor": 15,
-                "threat_actor": 10,
-            },
-        },
+        "distinct_bridges_in_cross_boundary_probes": len(boundaries_of_bridge),
+        "bridge_boundary_coverage_distribution": dict(sorted(coverage.items())),
+        "mean_boundaries_per_bridge": sum(len(b) for b in boundaries_of_bridge.values()) / len(boundaries_of_bridge),
     }
 
 
+def bridge_shown(condition_dir: Path) -> Counter:
+    """Trap probes by the number of their five fragments whose sanitized text names one of the trap's bridges."""
+    text = {f["public_provenance_id"]: f["sanitized_text"] for f in load_jsonl(condition_dir / "fragments.store.jsonl")}
+    shown = Counter()
+    for p in load_jsonl(condition_dir / "probes.jsonl"):
+        if p["probe_type"] == "cross_boundary":
+            shown[sum(any(b in text[pid] for b in p["bridge_context"]) for pid in p["fragment_provenance_ids"])] += 1
+    return shown
+
+
 def main():
-    data_dir = Path("../data") if Path("../data").exists() else Path("data")
-    if not data_dir.exists():
-        print("ERROR: data/ directory not found.", file=sys.stderr)
-        sys.exit(1)
-
-    conditions = sorted(d for d in data_dir.iterdir() if d.is_dir())
-    print(f"Computing bridge/probe stats for {len(conditions)} conditions...")
-    print()
-    print(f"{'condition':<35s} {'cb':>4s} {'w/br':>4s} {'mean_span':>9s} "
-          f"{'#bridges':>9s} {'avg_bd/br':>9s}")
-    print("-" * 80)
-
-    all_stats = []
+    ap = argparse.ArgumentParser(description="Corpus and trap-probe statistics (Appendix I).")
+    ap.add_argument("--data", type=Path, default=HERE.parent / "data")
+    args = ap.parse_args()
+    conditions = sorted(d for d in args.data.iterdir() if d.is_dir())
+    header = (f"{'condition':28s} {'seed':>4s} {'trap probes':>11s} {'with bridge context':>19s} "
+              f"{'mean boundaries per trap':>24s} {'distinct bridges':>16s} {'mean boundaries per bridge':>26s}")
+    print(header)
+    print("-" * len(header))
+    distinct, first_folder, folder_totals = {}, {}, []
     for cond in conditions:
         s = stats_for_condition(cond)
-        if "error" in s:
-            print(f"  SKIP {cond.name}: {s['error']}")
-            continue
-
-        out = cond / "corpus_stats.json"
-        with out.open("w") as f:
+        with open(cond / "corpus_stats.json", "w") as f:
             json.dump(s, f, indent=2)
-
         cb = s["cross_boundary_probes"]
-        print(f"{cond.name:<35s} "
-              f"{cb['total']:>4d} "
-              f"{cb['with_bridge_context']:>4d} "
-              f"{cb['mean_boundary_span']:>9.2f} "
-              f"{s['distinct_bridges_in_cross_boundary_probes']:>9d} "
-              f"{s['mean_boundaries_per_bridge']:>9.2f}")
-        all_stats.append(s)
-
+        folder_totals.append((cb["total"], cb["with_bridge_context"]))
+        seed = json.loads((cond / "corpus.json").read_text())["seed"]
+        distinct.setdefault(seed, cb)
+        first_folder.setdefault(seed, cond)
+        print(f"{cond.name:28s} {seed:4d} {cb['total']:11d} {cb['with_bridge_context']:19d} "
+              f"{cb['mean_boundary_span']:24.2f} {s['distinct_bridges_in_cross_boundary_probes']:16d} "
+              f"{s['mean_boundaries_per_bridge']:26.2f}")
     print()
-    print(f"Wrote corpus_stats.json to {len(all_stats)} condition dirs.")
-    if all_stats:
-        mean_span = sum(
-            s["cross_boundary_probes"]["mean_boundary_span"]
-            for s in all_stats
-        ) / len(all_stats)
-        print(f"Mean cross-boundary probe span (boundaries): {mean_span:.2f}")
-        print(f"All cross-boundary probes carry a bridge_context (by construction).")
+    print(f"Wrote corpus_stats.json to {len(conditions)} condition folders.")
+    print(f"Trap probes over the {len(conditions)} condition folders: {sum(t for t, _ in folder_totals)}; "
+          f"with a bridge context: {sum(b for _, b in folder_totals)}")
+    traps = sum(cb["total"] for cb in distinct.values())
+    with_bridge = sum(cb["with_bridge_context"] for cb in distinct.values())
+    spans = Counter()
+    for cb in distinct.values():
+        spans.update({int(k): v for k, v in cb["boundary_span_distribution"].items()})
+    print(f"Distinct corpora (seeds): {len(distinct)} ({', '.join(map(str, sorted(distinct)))})")
+    print(f"Distinct trap probes: {traps}; with a bridge context: {with_bridge}")
+    print(f"Boundaries spanned per distinct trap probe: {dict(sorted(spans.items()))}; "
+          f"range {min(spans)} to {max(spans)}; mean {sum(k * v for k, v in spans.items()) / traps:.2f}")
+    shown = {seed: bridge_shown(d) for seed, d in sorted(first_folder.items())}
+    total = sum(shown.values(), Counter())
+    keys = list(range(max(3, max(total) + 1)))
+    print(f"Distinct trap probes whose bridge entity is named in the text of {', '.join(map(str, keys[:-1]))} or "
+          f"{keys[-1]} of their five fragments (the evidence of the unsafe rungs): "
+          + "; ".join(f"seed {s} " + ", ".join(str(c[k]) for k in keys) for s, c in shown.items())
+          + "; all " + ", ".join(str(total[k]) for k in keys))
 
 
 if __name__ == "__main__":

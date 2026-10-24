@@ -1,0 +1,87 @@
+Parse-failure sensitivity on cross-boundary trap probes.
+MAIN  = parse failures counted as not boundary-invalid (paper scoring)
+WORST = parse failures counted as boundary-invalid (hostile bound)
+PF    = parse failures among the cell's cross-boundary probes
+
+condition        rung                                   MAIN          WORST   PF
+--------------------------------------------------------------------------------
+Qwen    s42 N/C  isolated                       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s42 N/C  boundary_preserving_topk       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s42 N/C  shared_vector_index          100/100=100.0% 100/100=100.0%    0
+Qwen    s42 N/C  summary_merge                100/100=100.0% 100/100=100.0%    0
+
+Qwen    s42 C/C  isolated                       0/100=  0.0%   1/100=  1.0%    1
+Qwen    s42 C/C  boundary_preserving_topk       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s42 C/C  shared_vector_index           99/100= 99.0%  99/100= 99.0%    0
+Qwen    s42 C/C  summary_merge                 98/100= 98.0%  98/100= 98.0%    0
+
+Qwen    s42 N/P  isolated                       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s42 N/P  boundary_preserving_topk       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s42 N/P  shared_vector_index          100/100=100.0% 100/100=100.0%    0
+Qwen    s42 N/P  summary_merge                 99/100= 99.0%  99/100= 99.0%    0
+
+Qwen    s42 C/P  isolated                       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s42 C/P  boundary_preserving_topk       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s42 C/P  shared_vector_index           98/100= 98.0%  98/100= 98.0%    0
+Qwen    s42 C/P  summary_merge                 97/100= 97.0%  97/100= 97.0%    0
+
+Qwen    s43 N/C  isolated                       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s43 N/C  boundary_preserving_topk       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s43 N/C  shared_vector_index          100/100=100.0% 100/100=100.0%    0
+Qwen    s43 N/C  summary_merge                 97/100= 97.0%  97/100= 97.0%    0
+
+Qwen    s44 N/C  isolated                       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s44 N/C  boundary_preserving_topk       0/100=  0.0%   0/100=  0.0%    0
+Qwen    s44 N/C  shared_vector_index          100/100=100.0% 100/100=100.0%    0
+Qwen    s44 N/C  summary_merge                100/100=100.0% 100/100=100.0%    0
+
+Mistral s42 N/C  isolated                       0/100=  0.0%   0/100=  0.0%    0
+Mistral s42 N/C  boundary_preserving_topk       0/100=  0.0%   0/100=  0.0%    0
+Mistral s42 N/C  shared_vector_index          100/100=100.0% 100/100=100.0%    0
+Mistral s42 N/C  summary_merge                100/100=100.0% 100/100=100.0%    0
+
+Mistral s42 C/C  isolated                       0/100=  0.0%  19/100= 19.0%   19
+Mistral s42 C/C  boundary_preserving_topk       0/100=  0.0%  18/100= 18.0%   18
+Mistral s42 C/C  shared_vector_index          100/100=100.0% 100/100=100.0%    0
+Mistral s42 C/C  summary_merge                100/100=100.0% 100/100=100.0%    0
+
+Mistral s42 N/P  isolated                       0/100=  0.0%   0/100=  0.0%    0
+Mistral s42 N/P  boundary_preserving_topk       0/100=  0.0%   0/100=  0.0%    0
+Mistral s42 N/P  shared_vector_index          100/100=100.0% 100/100=100.0%    0
+Mistral s42 N/P  summary_merge                100/100=100.0% 100/100=100.0%    0
+
+Mistral s42 C/P  isolated                       0/100=  0.0%  19/100= 19.0%   19
+Mistral s42 C/P  boundary_preserving_topk       0/100=  0.0%  18/100= 18.0%   18
+Mistral s42 C/P  shared_vector_index          100/100=100.0% 100/100=100.0%    0
+Mistral s42 C/P  summary_merge                 97/100= 97.0%  97/100= 97.0%    0
+
+Mistral s43 N/C  isolated                       0/100=  0.0%   1/100=  1.0%    1
+Mistral s43 N/C  boundary_preserving_topk       0/100=  0.0%   1/100=  1.0%    1
+Mistral s43 N/C  shared_vector_index           97/100= 97.0%  97/100= 97.0%    0
+Mistral s43 N/C  summary_merge                 97/100= 97.0%  97/100= 97.0%    0
+
+Mistral s44 N/C  isolated                       0/100=  0.0%   4/100=  4.0%    4
+Mistral s44 N/C  boundary_preserving_topk       0/100=  0.0%   5/100=  5.0%    5
+Mistral s44 N/C  shared_vector_index          100/100=100.0% 100/100=100.0%    0
+Mistral s44 N/C  summary_merge                 99/100= 99.0%  99/100= 99.0%    0
+
+Parse failures: 92 of 14400 responses (0.64%), 86 of them on cross-boundary probes
+Parse failures that are JSON recalls with a missing or null component: 92 of 92; missing or null, per component: subject 0, action 0, object 92, outcome 73, time 72
+Cells with parse failures, over all 300 probes of the rung:
+  Qwen    s42 C/C  isolated                       1/300
+  Qwen    s42 C/C  summary_merge                  1/300
+  Mistral s42 N/C  boundary_preserving_topk       2/300
+  Mistral s42 C/C  isolated                      19/300
+  Mistral s42 C/C  boundary_preserving_topk      18/300
+  Mistral s42 C/C  summary_merge                  1/300
+  Mistral s42 N/P  boundary_preserving_topk       2/300
+  Mistral s42 C/P  isolated                      19/300
+  Mistral s42 C/P  boundary_preserving_topk      18/300
+  Mistral s43 N/C  isolated                       1/300
+  Mistral s43 N/C  boundary_preserving_topk       1/300
+  Mistral s44 N/C  isolated                       4/300
+  Mistral s44 N/C  boundary_preserving_topk       5/300
+
+Largest hostile bound on a safe rung: 19.0% (Mistral s42 C/C isolated; Mistral s42 C/P isolated)
+Same conditions, unsafe rungs (MAIN): 97.0% to 100.0%
+Smallest gap, within a condition, between the lowest unsafe-rung rate and the highest hostile safe-rung bound: 78.0 percentage points (Mistral s42 C/P)

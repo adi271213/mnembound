@@ -34,23 +34,5 @@
     "4": 8,
     "5": 2
   },
-  "mean_boundaries_per_bridge": 3.9166666666666665,
-  "generator_design_parameters": {
-    "bridge_density_extra_default": 0.05,
-    "bridge_density_slot_default": 0.0,
-    "bridge_categories": [
-      "shared_ip",
-      "malware_hash",
-      "cve",
-      "vendor",
-      "threat_actor"
-    ],
-    "default_bridge_pool_sizes": {
-      "shared_ip": 50,
-      "malware_hash": 30,
-      "cve": 20,
-      "vendor": 15,
-      "threat_actor": 10
-    }
-  }
+  "mean_boundaries_per_bridge": 3.9166666666666665
 }

@@ -1,0 +1,21 @@
+condition                    seed trap probes with bridge context mean boundaries per trap distinct bridges mean boundaries per bridge
+--------------------------------------------------------------------------------------------------------------------------------------
+mistral_full_cautious          42         100                 100                     4.61                8                       4.75
+mistral_full_cautious_pcb      42         100                 100                     4.61                8                       4.75
+mistral_full_neutral           42         100                 100                     4.61                8                       4.75
+mistral_full_pcb               42         100                 100                     4.61                8                       4.75
+mistral_seed43_neutral         43         100                 100                     3.89               12                       3.92
+mistral_seed44_neutral         44         100                 100                     4.00               13                       4.31
+qwen_full_cautious             42         100                 100                     4.61                8                       4.75
+qwen_full_cautious_pcb         42         100                 100                     4.61                8                       4.75
+qwen_full_neutral              42         100                 100                     4.61                8                       4.75
+qwen_full_pcb                  42         100                 100                     4.61                8                       4.75
+qwen_seed43_neutral            43         100                 100                     3.89               12                       3.92
+qwen_seed44_neutral            44         100                 100                     4.00               13                       4.31
+
+Wrote corpus_stats.json to 12 condition folders.
+Trap probes over the 12 condition folders: 1200; with a bridge context: 1200
+Distinct corpora (seeds): 3 (42, 43, 44)
+Distinct trap probes: 300; with a bridge context: 300
+Boundaries spanned per distinct trap probe: {2: 13, 3: 41, 4: 129, 5: 117}; range 2 to 5; mean 4.17
+Distinct trap probes whose bridge entity is named in the text of 0, 1 or 2 of their five fragments (the evidence of the unsafe rungs): seed 42 84, 16, 0; seed 43 72, 28, 0; seed 44 90, 10, 0; all 246, 54, 0

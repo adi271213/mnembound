@@ -1,214 +1,101 @@
 """
-qualitative_cases.py — Priority 5: anatomy of a fragment-faithful,
-event-false recall.
+qualitative_cases.py: the case studies of §7.3 and Appendix E.
 
-For each model (Qwen, Mistral), finds the cross-boundary trap response
-that:
+For each model, under the headline condition (seed 42, neutral prompt,
+collapsed aggregator), selects the cross-boundary trap response on the
+shared-vector rung that
 
-  (a) is on the shared_vector_index rung
-  (b) is not abstained, has no parse error
-  (c) is boundary-invalid under HARDENED scoring
-  (d) has the *most* distinct boundary IDs touched by its component values
-      (the more boundaries spanned, the more illustrative)
-  (e) ties broken by lowest probe_id (deterministic)
+  (a) produced a recall (no abstention, no parse failure),
+  (b) is boundary-invalid under the HARDENED scorer, and
+  (c) spans the most distinct boundaries, ties broken by the lowest probe_id,
 
-Prints a markdown-ready block for §7.3 "Anatomy of a fragment-faithful,
-event-false recall" with:
+and prints it as Markdown: the retrieved fragments, the recall, and for each
+component the fragments that supply it and how (exact value, fragment value
+inside the component, or component inside the fragment's text).
 
-  - probe_id
-  - retrieved fragments (sanitized values + boundary_id + role)
-  - model recall (the JSON output)
-  - per-component analysis: which fragment supplied which value, which
-    boundary it came from
-  - the trap structure: which fragments came from which boundary
-
-Usage:
-    python3 qualitative_cases.py
+Usage, from the repository root:
+  python3 analysis/qualitative_cases.py > analysis/qualitative_cases.md
 """
+import argparse
 import json
 from pathlib import Path
 
+from rescore_final_ci import ROLES, boundary_invalid, load_store, match_kind
 
-
-# === Patched to look in ../data/ by default ===
-import os as _os
-DATA_DIR = Path(_os.environ.get("MNEMBOUND_DATA_DIR", Path(__file__).parent.parent / "data"))
-def _frags_for_resp(resp, store):
-    return [store[pid] for pid in resp.get("fragment_provenance_ids", [])
-            if pid in store]
-
-
-def component_match(val, frags, view):
-    """Return list of (fragment, match_kind) for fragments supplying `val`.
-    Same logic as HARDENED scorer, but returns the matching fragments."""
-    if not isinstance(val, str) or not val.strip():
-        return []
-    val = val.strip()
-    field = "sanitized_value" if view == "tenant_hidden" else "value"
-    text_field = "sanitized_text" if view == "tenant_hidden" else "text"
-    out = []
-    for f in frags:
-        fv = str(f.get(field, "")).strip()
-        ft = str(f.get(text_field, "")).strip()
-        if not fv and not ft:
-            continue
-        if fv and val == fv:
-            out.append((f, "exact"))
-        elif fv and fv in val:
-            out.append((f, "fragment-in-recall"))
-        elif ft and val in ft:
-            out.append((f, "recall-in-fragment-text"))
-    return out
-
-
-def boundaries_touched(resp, store):
-    """Returns set of boundary_ids touched by this recall under HARDENED."""
-    if resp.get("abstained") or resp.get("recall") is None:
-        return set()
-    recall = resp["recall"]
-    view = resp.get("value_view", "tenant_hidden")
-    frags = _frags_for_resp(resp, store)
-    bset = set()
-    for c in ("subject", "action", "object", "outcome", "time"):
-        for f, _ in component_match(recall.get(c, ""), frags, view):
-            bset.add(f["boundary_id"])
-    return bset
-
-
-def find_best_case(out_dir):
-    """Find the cleanest cross-boundary trap example in this condition."""
-    if not (out_dir / "responses.jsonl").exists():
-        return None
-    store = {}
-    with open(out_dir / "fragments.store.jsonl") as f:
-        for line in f:
-            d = json.loads(line)
-            store[d["public_provenance_id"]] = d
-    best = None
-    best_n_boundaries = 0
-    with open(out_dir / "responses.jsonl") as f:
-        for line in f:
-            r = json.loads(line)
-            if (r["probe_type"] != "cross_boundary"
-                    or r["rung"] != "shared_vector_index"
-                    or r.get("abstained")
-                    or r.get("parse_error")
-                    or not r.get("recall")):
-                continue
-            b = boundaries_touched(r, store)
-            if len(b) <= 1:
-                continue
-            if (best is None
-                    or len(b) > best_n_boundaries
-                    or (len(b) == best_n_boundaries
-                        and r["probe_id"] < best["probe_id"])):
-                best = r
-                best_n_boundaries = len(b)
-    return best, store
-
-
-def render_case(model_label, resp, store):
-    """Pretty-print the case in markdown for §7.3."""
-    if resp is None:
-        return f"## {model_label}: no qualifying case found\n"
-    recall = resp["recall"]
-    view = resp.get("value_view", "tenant_hidden")
-    field = "sanitized_value" if view == "tenant_hidden" else "value"
-    text_field = "sanitized_text" if view == "tenant_hidden" else "text"
-    frags = _frags_for_resp(resp, store)
-    bset = boundaries_touched(resp, store)
-
-    lines = []
-    lines.append(f"## {model_label} — {resp['probe_id']}")
-    lines.append("")
-    lines.append(f"**Rung:** shared_vector_index  ")
-    lines.append(f"**Probe type:** cross_boundary  ")
-    lines.append(f"**Value view:** {view}  ")
-    lines.append(f"**Boundaries spanned by recall:** "
-                 f"{sorted(bset)} (n={len(bset)})  ")
-    lines.append(f"**Abstained:** {resp.get('abstained')}  ")
-    lines.append("")
-    lines.append("### Retrieved evidence")
-    lines.append("")
-    lines.append("| # | role | boundary | value | text |")
-    lines.append("|---|---|---|---|---|")
-    for i, f in enumerate(frags, 1):
-        v = str(f.get(field, ""))[:50]
-        t = str(f.get(text_field, ""))[:60]
-        lines.append(
-            f"| {i} | {f['role']} | {f['boundary_id']} | "
-            f"`{v}` | `{t}` |"
-        )
-    lines.append("")
-    lines.append("### Model recall (JSON output)")
-    lines.append("")
-    lines.append("```json")
-    lines.append(json.dumps({"recall": recall}, indent=2))
-    lines.append("```")
-    lines.append("")
-    lines.append("### Per-component analysis")
-    lines.append("")
-    lines.append("| Field | Value | Source fragments (boundary) | Match kind |")
-    lines.append("|---|---|---|---|")
-    for c in ("subject", "action", "object", "outcome", "time"):
-        val = recall.get(c, "")
-        matches = component_match(val, frags, view)
-        if not matches:
-            lines.append(f"| {c} | `{val}` | (no match) | — |")
-        else:
-            for f, kind in matches:
-                lines.append(
-                    f"| {c} | `{val[:40]}` | "
-                    f"frag#{frags.index(f)+1} ({f['boundary_id']}) | {kind} |"
-                )
-    lines.append("")
-    lines.append("### Why this is fragment-faithful, event-false")
-    lines.append("")
-    lines.append(
-        "Every recall component traces to at least one fragment in the "
-        f"retrieved evidence ({len(frags)} fragments total). Each fragment, "
-        "by construction, is a real fragment of a real record from a real "
-        "tenant — per-fragment provenance is intact. But the recall's "
-        f"components come from fragments spanning {len(bset)} distinct "
-        "boundaries; no single source record contains all of these "
-        "components together. The recall is therefore a composition of "
-        "facts that did not co-occur in any real event in the corpus."
-    )
-    lines.append("")
-    return "\n".join(lines)
-
-
-CONDITIONS_TO_TRY = {
-    "Qwen3-30B-A3B-Instruct-2507-FP8 (seed 42, neutral / collapsed)":
-        "qwen_full_neutral",
-    "Mistral-Small-3.2-24B-Instruct-2506-FP8 (seed 42, neutral / collapsed)":
-        "mistral_full_neutral",
+HERE = Path(__file__).resolve().parent
+CASES = {
+    "Qwen3-30B-A3B-Instruct-2507-FP8 (seed 42, neutral / collapsed)": "qwen_full_neutral",
+    "Mistral-Small-3.2-24B-Instruct-2506-FP8 (seed 42, neutral / collapsed)": "mistral_full_neutral",
 }
 
 
+def matches(resp, store):
+    """component -> [(fragment number, fragment, match kind)] over the retrieved fragments."""
+    view = resp.get("value_view", "tenant_hidden")
+    frags = [store[pid] for pid in resp["fragment_provenance_ids"] if pid in store]
+    out = {}
+    for c in ROLES:
+        val = resp["recall"].get(c, "")
+        val = val.strip() if isinstance(val, str) else ""
+        out[c] = [(i, f, k) for i, f in enumerate(frags, 1) if val and (k := match_kind(val, f, view))]
+    return frags, out
+
+
+def find_case(condition_dir):
+    store = load_store(condition_dir)
+    best, best_span = None, 0
+    with open(condition_dir / "responses.jsonl") as f:
+        for line in f:
+            r = json.loads(line)
+            if (r["probe_type"] != "cross_boundary" or r["rung"] != "shared_vector_index"
+                    or r.get("abstained") or r.get("parse_error") or not r.get("recall")
+                    or not boundary_invalid(r, store)):
+                continue
+            span = len({f["boundary_id"] for ms in matches(r, store)[1].values() for _, f, _ in ms})
+            if span > best_span or (span == best_span and r["probe_id"] < best["probe_id"]):
+                best, best_span = r, span
+    return best, store
+
+
+def render(label, resp, store):
+    frags, comp = matches(resp, store)
+    spanned = sorted({f["boundary_id"] for ms in comp.values() for _, f, _ in ms})
+    lines = [f"## {label}: {resp['probe_id']}", "",
+             f"Rung: shared_vector_index. Value view: {resp['value_view']}. "
+             f"Boundaries spanned by the recall: {', '.join(spanned)} ({len(spanned)}).", "",
+             "### Retrieved evidence", "",
+             "| # | role | boundary | sanitized value | sanitized text |", "|---|---|---|---|---|"]
+    for i, f in enumerate(frags, 1):
+        lines.append(f"| {i} | {f['role']} | {f['boundary_id']} | `{f['sanitized_value']}` | `{f['sanitized_text']}` |")
+    lines += ["", "### Recall", "", "```json", json.dumps({"recall": resp["recall"]}, indent=2), "```", "",
+              "### Supplying fragments per component", "",
+              "| component | value | fragment (boundary) | match |", "|---|---|---|---|"]
+    for c in ROLES:
+        val = resp["recall"].get(c, "")
+        if not comp[c]:
+            lines.append(f"| {c} | `{val}` | none | none |")
+        for i, f, kind in comp[c]:
+            lines.append(f"| {c} | `{val}` | #{i} ({f['boundary_id']}) | {kind} |")
+    kinds = [kind for c in ROLES for _, _, kind in comp[c]]
+    single = sum(len(comp[c]) == 1 for c in ROLES)
+    lines += ["",
+              f"Match kinds: {', '.join(f'{k} {kinds.count(k)}' for k in sorted(set(kinds)))}. "
+              f"Components supplied by exactly one fragment: {single} of {len(ROLES)}.",
+              ""]
+    return "\n".join(lines)
+
+
 def main():
-    blocks = []
-    blocks.append("# §7.3 Anatomy of a fragment-faithful, event-false recall")
-    blocks.append("")
-    blocks.append(
-        "To make the failure mode concrete, we walk through one "
-        "cross-boundary trap probe per model, under the headline condition "
-        "(neutral prompt + collapsed aggregator) on the shared-vector-index "
-        "rung. For each example we show the five retrieved fragments, the "
-        "model's recall, and the per-component analysis demonstrating that "
-        "each recall field is verbatim or near-verbatim from a fragment, "
-        "while the fragments themselves come from multiple distinct "
-        "boundaries.")
-    blocks.append("")
-    for label, dir_name in CONDITIONS_TO_TRY.items():
-        result = find_best_case(DATA_DIR / dir_name)
-        if result is None:
-            blocks.append(f"## {label}: directory {dir_name} not found\n")
-            continue
-        best, store = result
-        blocks.append(render_case(label, best, store))
-        blocks.append("")
-    print("\n".join(blocks))
+    ap = argparse.ArgumentParser(description="Case studies of §7.3 and Appendix E.")
+    ap.add_argument("--data", type=Path, default=HERE.parent / "data")
+    args = ap.parse_args()
+    out = ["# Case studies: fragment-faithful, event-false recalls (§7.3, Appendix E)", "",
+           "One cross-boundary trap per model under the headline condition on the shared-vector rung: the "
+           "boundary-invalid recall that spans the most boundaries, ties broken by the lowest probe_id.", ""]
+    for label, condition in CASES.items():
+        resp, store = find_case(args.data / condition)
+        out.append(render(label, resp, store) if resp else f"## {label}: no qualifying response\n")
+    print("\n".join(out))
 
 
 if __name__ == "__main__":
