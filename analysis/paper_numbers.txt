@@ -1,0 +1,112 @@
+MnemBound: numbers that the paper derives from the released data (analysis/paper_numbers.py)
+
+[Data] §5 and §6, Appendix I
+  conditions 12; responses 14400; per condition 1200 (300 probes x 4 rungs)
+  probes per condition by type: supported 100, cross_boundary 100, absent 50, partial 50
+  corpus seed 42: conditions 8; tenants 10; records 5000 (500 per tenant); fragments 25000
+  corpus seed 43: conditions 2; tenants 10; records 5000 (500 per tenant); fragments 25000
+  corpus seed 44: conditions 2; tenants 10; records 5000 (500 per tenant); fragments 25000
+  responses by value view: tenant_hidden 14400
+
+[§5.3] Safe-rung equivalence and retention
+  isolated and boundary_preserving_topk receive identical contexts: 3600/3600 probe pairs
+  seed 42: safe rungs keep 23.4% of a trap's source fragments on average (rung_stats.jsonl: 23.4%)
+  seed 43: safe rungs keep 33.4% of a trap's source fragments on average (rung_stats.jsonl: 33.4%)
+  seed 44: safe rungs keep 30.6% of a trap's source fragments on average (rung_stats.jsonl: 30.6%)
+
+[§7.1] Trap responses, supported probes, event structure
+  safe rungs, trap responses without a recall: 98/2400 (parse failures 86, abstentions 12)
+  unsafe rungs, trap responses without a recall: 10/2400 (parse failures 0, abstentions 10)
+  supported probes with a recall: 4800/4800 (48 of 48 cells at 100/100)
+  isolated             supported recalls whose five components all come from their own event's fragments: ignoring case 1159/1200 = 96.6%; case-sensitive 1153/1200 = 96.1%
+  shared_vector_index  supported recalls whose five components all come from their own event's fragments: ignoring case 1162/1200 = 96.8%; case-sensitive 1158/1200 = 96.5%
+  summary_merge        supported recalls whose five components all come from their own event's fragments: ignoring case 1080/1200 = 90.0%; case-sensitive 405/1200 = 33.8%
+  together             ignoring case 3401/3600 = 94.5%
+  both models on the same trap probe and unsafe rung, seed 42:
+    N/C: 200 probe-rung pairs; recall from both 200; exactly one abstains 0; both abstain 0
+    C/C: 200 probe-rung pairs; recall from both 197; exactly one abstains 3; both abstain 0
+    N/P: 200 probe-rung pairs; recall from both 200; exactly one abstains 0; both abstain 0
+    C/P: 200 probe-rung pairs; recall from both 193; exactly one abstains 7; both abstain 0
+  median raw-response length in characters: supported-probe recalls, all rungs 168 (n=4800); trap-probe recalls, all rungs 162 (n=4692); boundary-invalid recalls 170 (n=2378)
+  safe rungs: trap contexts holding two or more events of the querying tenant 616/2400; recalls 2302, of which 604/2302 combine two or more events
+  unsafe rungs: trap responses combining two or more events 2388/2400 = 99.5%
+
+[Appendix A.1] Components that match no source-fragment value (case-insensitive substring, either direction)
+  unsafe-rung trap recalls 2390; with at least one such component 2346/2390 = 98.2%
+  per component: action 2269, time 1127, object 112, outcome 77, subject 33
+  such time components, by the source fragment whose text contains them: action 1125, none 2
+  such action components that a source fragment's text contains: 2079/2269 = 91.6%
+  recalls whose every component matches a source-fragment value or lies in a source fragment's text: 2159/2390 = 90.3%
+
+[Figure 3] Boundary-invalid rate per model, pooled over its 6 conditions
+  Qwen    Iso 0/600 = 0.0%; BP 0/600 = 0.0%; SV 597/600 = 99.5%; SM 591/600 = 98.5%
+  Mistral Iso 0/600 = 0.0%; BP 0/600 = 0.0%; SV 597/600 = 99.5%; SM 593/600 = 98.8%
+
+[Figure 4, §7.2] Cautious prompt and per-client-blocks aggregator
+  Figure 4, neutral: median absent-probe abstention 30.0% (16 cells); median boundary-invalid rate 100.0% (8 unsafe-rung cells)
+  Figure 4, cautious: median absent-probe abstention 96.0% (16 cells); median boundary-invalid rate 98.5% (8 unsafe-rung cells)
+  absent-probe abstention per neutral condition, four rungs pooled: 8.0% (Mistral s43 N/C) to 53.5% (Qwen    s43 N/C) over 8 conditions
+  absent-probe abstention per neutral condition on seed 42, four rungs pooled: 8.5% (Mistral s42 N/C) to 49.5% (Qwen    s42 N/C) over 4 conditions
+  absent-probe abstention per cautious condition, four rungs pooled: 90.5% (Mistral s42 C/C) to 98.0% (Qwen    s42 C/C) over 4 conditions
+  lowest absent-probe abstention in a cautious cell: 80.0% (Mistral s42 C/C, summary_merge)
+  Qwen    SV neutral -> cautious (collapsed): 100/100 -> 99/100
+  Qwen    SM neutral -> cautious (collapsed): 100/100 -> 98/100
+  Mistral SV neutral -> cautious (collapsed): 100/100 -> 100/100
+  Mistral SM neutral -> cautious (collapsed): 100/100 -> 100/100
+  trap outcomes (boundary-invalid or not) that change from neutral to cautious: 3 of 400
+  Qwen    SM collapsed -> per-client-blocks (neutral): 100/100 -> 99/100
+  Mistral SM collapsed -> per-client-blocks (neutral): 100/100 -> 100/100
+  Table 6, unsafe-rung cells with the cautious prompt: 97.0% to 100.0% (8 cells)
+  Table 6, unsafe-rung cells with the per-client-blocks aggregator: 97.0% to 100.0% (8 cells)
+
+[§7.4] Seeds and boundary span
+  Qwen    s42 N/C: unsafe rungs 100/100 = 100.0%, 100/100 = 100.0%; safe rungs 0/100 = 0.0%, 0/100 = 0.0%
+  Qwen    s43 N/C: unsafe rungs 100/100 = 100.0%, 97/100 = 97.0%; safe rungs 0/100 = 0.0%, 0/100 = 0.0%
+  Qwen    s44 N/C: unsafe rungs 100/100 = 100.0%, 100/100 = 100.0%; safe rungs 0/100 = 0.0%, 0/100 = 0.0%
+  Mistral s42 N/C: unsafe rungs 100/100 = 100.0%, 100/100 = 100.0%; safe rungs 0/100 = 0.0%, 0/100 = 0.0%
+  Mistral s43 N/C: unsafe rungs 97/100 = 97.0%, 97/100 = 97.0%; safe rungs 0/100 = 0.0%, 0/100 = 0.0%
+  Mistral s44 N/C: unsafe rungs 100/100 = 100.0%, 99/100 = 99.0%; safe rungs 0/100 = 0.0%, 0/100 = 0.0%
+  span 2: distinct trap probes 13; boundary-invalid 43/52 = 82.7%; event-invalid 52/52 = 100.0%
+  span 3: distinct trap probes 41; boundary-invalid 279/284 = 98.2%; event-invalid 279/284 = 98.2%
+  span 4: distinct trap probes 129; boundary-invalid 742/744 = 99.7%; event-invalid 743/744 = 99.9%
+  span 5: distinct trap probes 117; boundary-invalid 1314/1320 = 99.5%; event-invalid 1314/1320 = 99.5%
+
+[§8] How the source fragments of a distinct trap probe differ
+  distinct trap probes 300; by number of tenants: 13 traps with 2, 41 traps with 3, 129 traps with 4, 117 traps with 5 (median 4)
+  days between the earliest and latest source fragment: median 64.4, minimum 18.0, maximum 85.7
+  by number of incident templates: 37 traps with 2, 178 traps with 3, 84 traps with 4, 1 trap with 5
+  traps in which two fragments of different events share an entity: 58/300
+
+[Table 4, Appendix A] Unsafe-rung cells: HARDENED with Wilson 95% CI, EXACT, LOOSE
+  Qwen    s42 N/C SV  100.0 [96.3, 100.0]   96.0  100.0
+  Qwen    s42 N/C SM  100.0 [96.3, 100.0]   99.0  100.0
+  Qwen    s42 C/C SV   99.0 [94.6,  99.8]   94.0   99.0
+  Qwen    s42 C/C SM   98.0 [93.0,  99.4]   97.0   98.0
+  Qwen    s42 N/P SV  100.0 [96.3, 100.0]   94.0  100.0
+  Qwen    s42 N/P SM   99.0 [94.6,  99.8]   90.0   99.0
+  Qwen    s42 C/P SV   98.0 [93.0,  99.4]   91.0   98.0
+  Qwen    s42 C/P SM   97.0 [91.5,  99.0]   89.0   97.0
+  Qwen    s43 N/C SV  100.0 [96.3, 100.0]   83.0  100.0
+  Qwen    s43 N/C SM   97.0 [91.5,  99.0]   91.0   97.0
+  Qwen    s44 N/C SV  100.0 [96.3, 100.0]   92.0  100.0
+  Qwen    s44 N/C SM  100.0 [96.3, 100.0]   97.0  100.0
+  Mistral s42 N/C SV  100.0 [96.3, 100.0]   51.0  100.0
+  Mistral s42 N/C SM  100.0 [96.3, 100.0]   99.0  100.0
+  Mistral s42 C/C SV  100.0 [96.3, 100.0]   68.0  100.0
+  Mistral s42 C/C SM  100.0 [96.3, 100.0]   97.0  100.0
+  Mistral s42 N/P SV  100.0 [96.3, 100.0]   51.0  100.0
+  Mistral s42 N/P SM  100.0 [96.3, 100.0]   99.0  100.0
+  Mistral s42 C/P SV  100.0 [96.3, 100.0]   68.0  100.0
+  Mistral s42 C/P SM   97.0 [91.5,  99.0]   96.0   97.0
+  Mistral s43 N/C SV   97.0 [91.5,  99.0]   39.0   97.0
+  Mistral s43 N/C SM   97.0 [91.5,  99.0]   93.0   97.0
+  Mistral s44 N/C SV  100.0 [96.3, 100.0]   46.0  100.0
+  Mistral s44 N/C SM   99.0 [94.6,  99.8]   91.0   99.0
+  median of the 24 cells: HARDENED 100.0; EXACT 91.5; LOOSE 100.0
+  safe-rung cells: 24, of which at 0/100: 24 (Wilson interval of 0/100: 0.0% to 3.7%)
+
+[Appendix F] Audit sample
+  rows 100; by model: Qwen 50, Mistral 50; by probe type and scorer decision: absent ABSTAIN 5, absent RECALL 6, cross_boundary INVALID 40, cross_boundary PARSE_FAIL 2, cross_boundary SAFE 18, partial RECALL 9, supported RECALL 20
+
+[Check] HARDENED scorer (rescore_final_ci.py) and BCESV ground truth (bcesv.py)
+  agree on 14400/14400 responses
