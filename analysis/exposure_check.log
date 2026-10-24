@@ -1,0 +1,22 @@
+wrote exposure_check.csv (24 rows)
+versions: Python 3.13.2; rank-bm25 0.2.2; numpy 2.5.4; sentence-transformers 6.2.0; transformers 5.20.2; torch 2.14.1; model sentence-transformers/all-MiniLM-L6-v2 at revision 1110a243fdf4706b3f48f1d95db1a4f5529b4d41, on CPU
+
+Top-10 contexts pooled over the 3 distinct corpora
+BM25   ties by hash       claim   exposed 208/300 (69.3%); covering all five roles 208; with a complete genuine event 0; returning fewer than 10 fragments 0; source fragments retrieved 889/1500; queries returning all five 0
+BM25   ties by hash       generic exposed 0/120 (0.0%); covering all five roles 0; with a complete genuine event 0; returning fewer than 10 fragments 57
+BM25   ties by file-order claim   exposed 208/300 (69.3%); covering all five roles 208; with a complete genuine event 0; returning fewer than 10 fragments 0; source fragments retrieved 889/1500; queries returning all five 0
+BM25   ties by file-order generic exposed 0/120 (0.0%); covering all five roles 0; with a complete genuine event 0; returning fewer than 10 fragments 57
+MiniLM ties by hash       claim   exposed 0/300 (0.0%); covering all five roles 0; with a complete genuine event 0; returning fewer than 10 fragments 0; source fragments retrieved 148/1500; queries returning all five 0
+MiniLM ties by hash       generic exposed 0/120 (0.0%); covering all five roles 0; with a complete genuine event 0; returning fewer than 10 fragments 0
+MiniLM ties by file-order claim   exposed 0/300 (0.0%); covering all five roles 0; with a complete genuine event 0; returning fewer than 10 fragments 0; source fragments retrieved 147/1500; queries returning all five 0
+MiniLM ties by file-order generic exposed 0/120 (0.0%); covering all five roles 0; with a complete genuine event 0; returning fewer than 10 fragments 0
+
+Hash order against file order, per corpus seed and pooled
+  BM25   exposed claim contexts: equal for every seed
+  BM25   exposed generic contexts: equal for every seed
+  BM25   source fragments retrieved: seed 42: 296 by hash, 297 by file order; seed 44: 297 by hash, 296 by file order; equal when pooled (889)
+  BM25   claim queries returning all five: equal for every seed
+  MiniLM exposed claim contexts: equal for every seed
+  MiniLM exposed generic contexts: equal for every seed
+  MiniLM source fragments retrieved: seed 44: 45 by hash, 44 by file order; pooled: 148 by hash, 147 by file order
+  MiniLM claim queries returning all five: equal for every seed
