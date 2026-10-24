@@ -1,258 +1,153 @@
 """
-bcesv_run_all.py — run all verifier variants across all 12 conditions,
-plus ablations on BcesvReconstruct.
+bcesv_run_all.py: Table 2, Figure 6 and Appendix D.
 
-Outputs:
-  - Stdout: paper-ready table with precision/recall/F1 and 95% CIs on
-    cross-boundary trap probes.
-  - bcesv_results.csv: machine-readable per-cell metrics.
-  - bcesv_summary.csv: per-variant pooled metrics across all conditions.
+Runs every BCESV variant over the cross-boundary and supported responses of the
+twelve conditions and writes, next to this script,
 
-The table answers the question §8 asks:
-  "Does the post-hoc verifier catch the failure mode? Under what input
-   conditions?"
+  bcesv_results.csv   counts per variant, condition, rung and probe type
+  bcesv_summary.csv   per variant, on the shared-vector (SV) and summary-merge
+                      (SM) rungs and pooled over both ("both"): recall and
+                      precision on cross-boundary probes, the share of
+                      supported recalls flagged INVALID (fp_sup) and accepted
+                      as SAFE (acc_sup), abstention on cross-boundary probes,
+                      the underlying counts, and Wilson 95% intervals
+
+and prints the summary, the values plotted in Figure 6, how many trap
+responses FragmentOnly flags INVALID, and the thresholds of the cohesion rule
+of BcesvReconstruct. Ground truth is
+ground_truth_boundary_invalid. Parse failures are counted in bcesv_results.csv
+and excluded from the metrics.
+
+Usage, from the repository root:
+  python3 bcesv/bcesv_run_all.py > bcesv/bcesv_run_all.log
 """
+import argparse
 import csv
-import sys
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
 
-from bcesv import (
-    StoreEntry, load_store, load_responses,
-    FragmentOnly, BcesvExact, BcesvNoisy, BcesvReconstruct,
-    evaluate, precision_recall_f1, wilson_ci,
-    ground_truth_boundary_invalid, ground_truth_event_invalid,
-)
+from bcesv import (RECON_ENTITY_JACCARD, RECON_TIME_WINDOW_SEC, BcesvExact, BcesvNoisy, BcesvReconstruct,
+                   FragmentOnly, ground_truth_boundary_invalid, load_responses, load_store, wilson_ci)
 
-
-CONDITIONS = [
-    ("qwen_full_neutral",         "Qwen    s42 N/C"),
-    ("qwen_full_cautious",        "Qwen    s42 C/C"),
-    ("qwen_full_pcb",             "Qwen    s42 N/P"),
-    ("qwen_full_cautious_pcb",    "Qwen    s42 C/P"),
-    ("qwen_seed43_neutral",       "Qwen    s43 N/C"),
-    ("qwen_seed44_neutral",       "Qwen    s44 N/C"),
-    ("mistral_full_neutral",      "Mistral s42 N/C"),
-    ("mistral_full_cautious",     "Mistral s42 C/C"),
-    ("mistral_full_pcb",          "Mistral s42 N/P"),
-    ("mistral_full_cautious_pcb", "Mistral s42 C/P"),
-    ("mistral_seed43_neutral",    "Mistral s43 N/C"),
-    ("mistral_seed44_neutral",    "Mistral s44 N/C"),
-]
-
-RUNGS = ["isolated", "boundary_preserving_topk",
-         "shared_vector_index", "summary_merge"]
-
-# Build the variant list. Each entry is (display_name, verifier_instance).
-def build_variants() -> list:
-    variants = [
-        ("FragmentOnly",        FragmentOnly()),
-        ("BcesvExact",          BcesvExact()),
-        ("BcesvNoisy(10%)",     BcesvNoisy(0.10, seed=42)),
-        ("BcesvNoisy(20%)",     BcesvNoisy(0.20, seed=42)),
-        ("BcesvNoisy(30%)",     BcesvNoisy(0.30, seed=42)),
-        ("BcesvReconstruct",    BcesvReconstruct()),
-    ]
-    # Ablations on Reconstruct (R3 components dropped one at a time).
-    variants.extend([
-        ("BcesvRecon[no_tenant]",   BcesvReconstruct(use_tenant=False)),
-        ("BcesvRecon[no_time]",     BcesvReconstruct(use_time=False)),
-        ("BcesvRecon[no_entity]",   BcesvReconstruct(use_entity_set=False)),
-        ("BcesvRecon[no_logsrc]",   BcesvReconstruct(use_log_source=False)),
-        ("BcesvRecon[no_template]", BcesvReconstruct(use_template=False)),
-    ])
-    return variants
+HERE = Path(__file__).resolve().parent
+CONDITIONS = ["qwen_full_neutral", "qwen_full_cautious", "qwen_full_pcb", "qwen_full_cautious_pcb",
+              "qwen_seed43_neutral", "qwen_seed44_neutral", "mistral_full_neutral", "mistral_full_cautious",
+              "mistral_full_pcb", "mistral_full_cautious_pcb", "mistral_seed43_neutral", "mistral_seed44_neutral"]
+RUNGS = ("isolated", "boundary_preserving_topk", "shared_vector_index", "summary_merge")
+UNSAFE = {"shared_vector_index": "SV", "summary_merge": "SM"}
 
 
-def fmt_rate_ci(k: int, n: int) -> str:
-    if n == 0:
-        return "n/a"
-    lo, hi = wilson_ci(k, n)
-    return f"{k/n*100:5.1f}% [{lo*100:5.1f},{hi*100:5.1f}]"
+def variants():
+    """The eleven variants of Appendix D, then BcesvExact with case-insensitive matching (§8)."""
+    return [FragmentOnly(), BcesvExact(), BcesvNoisy(0.1), BcesvNoisy(0.2), BcesvNoisy(0.3),
+            BcesvReconstruct(),
+            BcesvReconstruct(use_tenant=False), BcesvReconstruct(use_time=False),
+            BcesvReconstruct(use_entity_set=False), BcesvReconstruct(use_log_source=False),
+            BcesvReconstruct(use_template=False),
+            BcesvExact(casefold=True)]
 
 
-def main(base_dir: Path):
-    variants = build_variants()
+def run(data_dir):
+    vs = variants()
+    cells = Counter()
+    for cond in CONDITIONS:
+        store, responses = load_store(data_dir / cond), load_responses(data_dir / cond)
+        for r in responses:
+            if r["probe_type"] not in ("cross_boundary", "supported"):
+                continue
+            if r.get("parse_error"):
+                for v in vs:
+                    cells[(v.name, cond, r["rung"], r["probe_type"], "parse_fail")] += 1
+                continue
+            gt = ground_truth_boundary_invalid(r, store)
+            for v in vs:
+                pred = v.predict(r, store)
+                outcome = ("tp" if gt else "fp") if pred == "INVALID" else ("fn" if gt else "tn")
+                key = (v.name, cond, r["rung"], r["probe_type"])
+                cells[key + (pred,)] += 1
+                cells[key + (outcome,)] += 1
+    return vs, cells
 
-    # Aggregate stats per (variant, rung) across all conditions, pooled.
-    # Also keep per-(variant, condition, rung) for the CSV.
-    pooled: dict = {v_name: {r: Counter() for r in RUNGS} for v_name, _ in variants}
-    per_cell_rows = []
 
-    for cond_dir, cond_label in CONDITIONS:
-        cond_path = base_dir / cond_dir
-        if not (cond_path / "responses.jsonl").exists():
-            print(f"  (skipping {cond_label}: {cond_path} missing)", file=sys.stderr)
-            continue
-        print(f"  loading {cond_label} from {cond_path}...", file=sys.stderr)
-        store = load_store(cond_path)
-        responses = load_responses(cond_path)
-
-        for v_name, verifier in variants:
-            by_cell = evaluate(verifier, responses, store,
-                                gt_fn=ground_truth_boundary_invalid)
-            for (rung, pt), c in by_cell.items():
-                # We only pool/report on cross_boundary probes (the
-                # verifier's primary job) and supported probes (its FP rate).
-                if pt not in ("cross_boundary", "supported"):
-                    continue
-                key = (rung, pt)
-                # Pool
-                pooled[v_name][rung]["tp_" + pt] += c.get("tp", 0)
-                pooled[v_name][rung]["fp_" + pt] += c.get("fp", 0)
-                pooled[v_name][rung]["fn_" + pt] += c.get("fn", 0)
-                pooled[v_name][rung]["tn_" + pt] += c.get("tn", 0)
-                pooled[v_name][rung]["abstain_" + pt] += c.get("abstain", 0)
-                pooled[v_name][rung]["n_" + pt] += c.get("n", 0)
-                pooled[v_name][rung]["parse_" + pt] += c.get("parse_fail", 0)
-                # Per-cell row for CSV
-                per_cell_rows.append({
-                    "variant": v_name,
-                    "condition": cond_label,
-                    "rung": rung,
-                    "probe_type": pt,
-                    "n": c.get("n", 0),
-                    "tp": c.get("tp", 0),
-                    "fp": c.get("fp", 0),
-                    "fn": c.get("fn", 0),
-                    "tn": c.get("tn", 0),
-                    "abstain": c.get("abstain", 0),
-                    "parse_fail": c.get("parse_fail", 0),
-                })
-
-    # ---------------- Paper table (pooled, cross-boundary, 4 rungs) ----------
-    # The interesting metrics:
-    #   Recall on cross-boundary traps: TP / (TP + FN). High = catches the failure.
-    #   Precision: TP / (TP + FP). High = doesn't false-alarm.
-    #   Abstain rate: how often the verifier punted.
-    #   On supported probes: FP rate (how often verifier wrongly flags
-    #     a legitimate single-event recall).
-
-    print()
-    print("=" * 110)
-    print("BCESV table (pooled across all 12 conditions, cross-boundary probes)")
-    print("=" * 110)
-    print()
-    print(f"{'variant':24s} {'rung':28s} "
-          f"{'recall (sensitivity)':>26s} "
-          f"{'precision':>26s} "
-          f"{'abstain':>14s}")
-    print("-" * 124)
-
-    for v_name, _ in variants:
-        for rung in RUNGS:
-            c = pooled[v_name][rung]
-            tp = c.get("tp_cross_boundary", 0)
-            fp = c.get("fp_cross_boundary", 0)
-            fn = c.get("fn_cross_boundary", 0)
-            tn = c.get("tn_cross_boundary", 0)
-            ab = c.get("abstain_cross_boundary", 0)
-            n_cb = c.get("n_cross_boundary", 0) - c.get("parse_cross_boundary", 0)
-
-            # Recall = TP / (TP+FN); positives = ground-truth invalids
-            pos = tp + fn
-            # Precision = TP / (TP+FP); flagged = TP + FP
-            flagged = tp + fp
-
-            recall_str = fmt_rate_ci(tp, pos) if pos else "n/a"
-            prec_str = fmt_rate_ci(tp, flagged) if flagged else "n/a"
-            abstain_str = fmt_rate_ci(ab, n_cb) if n_cb else "n/a"
-
-            print(f"{v_name:24s} {rung:28s} "
-                  f"{recall_str:>26s} "
-                  f"{prec_str:>26s} "
-                  f"{abstain_str:>14s}")
-        print()
-
-    # ---------------- Supported-probe FP rate --------------------------
-    print("=" * 110)
-    print("Verifier false-positive rate on SUPPORTED probes (pooled)")
-    print("=" * 110)
-    print("Lower is better. A high FP rate means the verifier flags")
-    print("legitimate single-event recalls as boundary-invalid.")
-    print()
-    print(f"{'variant':24s} {'rung':28s} {'FP/(FP+TN)':>26s}")
-    print("-" * 82)
-    for v_name, _ in variants:
-        for rung in RUNGS:
-            c = pooled[v_name][rung]
-            fp = c.get("fp_supported", 0)
-            tn = c.get("tn_supported", 0)
-            denom = fp + tn
-            fp_str = fmt_rate_ci(fp, denom) if denom else "n/a"
-            print(f"{v_name:24s} {rung:28s} {fp_str:>26s}")
-        print()
-
-    # ---------------- CSV output ---------------------------------------
-    csv_path = Path(__file__).resolve().parent / "bcesv_results.csv"
-    with open(csv_path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=[
-            "variant", "condition", "rung", "probe_type",
-            "n", "tp", "fp", "fn", "tn", "abstain", "parse_fail",
-        ])
-        w.writeheader()
-        for row in per_cell_rows:
-            w.writerow(row)
-    print(f"Wrote per-cell CSV to {csv_path}")
-
-    # ---------------- Pooled summary CSV --------------------------------
-    pooled_csv = Path(__file__).resolve().parent / "bcesv_summary.csv"
-    with open(pooled_csv, "w", newline="") as f:
+def write_results(vs, cells):
+    names = [v.name for v in vs]
+    path = HERE / "bcesv_results.csv"
+    with path.open("w", newline="") as f:
         w = csv.writer(f)
-        w.writerow([
-            "variant", "rung", "probe_type",
-            "tp", "fp", "fn", "tn", "abstain", "n_minus_parse",
-            "recall", "recall_lo", "recall_hi",
-            "precision", "precision_lo", "precision_hi",
-            "abstain_rate", "abstain_lo", "abstain_hi",
-        ])
-        for v_name, _ in variants:
-            for rung in RUNGS:
-                c = pooled[v_name][rung]
-                for pt in ("cross_boundary", "supported"):
-                    tp = c.get(f"tp_{pt}", 0)
-                    fp = c.get(f"fp_{pt}", 0)
-                    fn = c.get(f"fn_{pt}", 0)
-                    tn = c.get(f"tn_{pt}", 0)
-                    ab = c.get(f"abstain_{pt}", 0)
-                    n_eff = c.get(f"n_{pt}", 0) - c.get(f"parse_{pt}", 0)
-                    pos = tp + fn
-                    flagged = tp + fp
-                    rec_lo, rec_hi = wilson_ci(tp, pos) if pos else (0, 1)
-                    prec_lo, prec_hi = wilson_ci(tp, flagged) if flagged else (0, 1)
-                    ab_lo, ab_hi = wilson_ci(ab, n_eff) if n_eff else (0, 1)
-                    w.writerow([
-                        v_name, rung, pt,
-                        tp, fp, fn, tn, ab, n_eff,
-                        tp / pos if pos else 0, rec_lo, rec_hi,
-                        tp / flagged if flagged else 0, prec_lo, prec_hi,
-                        ab / n_eff if n_eff else 0, ab_lo, ab_hi,
-                    ])
-    print(f"Wrote pooled summary to {pooled_csv}")
+        w.writerow(["variant", "condition", "rung", "probe_type", "tp", "fp", "fn", "tn",
+                    "invalid", "safe", "abstain", "parse_fail"])
+        for name in names:
+            for cond in CONDITIONS:
+                for rung in RUNGS:
+                    for pt in ("cross_boundary", "supported"):
+                        k = (name, cond, rung, pt)
+                        w.writerow(list(k) + [cells[k + (x,)] for x in
+                                              ("tp", "fp", "fn", "tn", "INVALID", "SAFE", "ABSTAIN", "parse_fail")])
+    return path, len(names) * len(CONDITIONS) * len(RUNGS) * 2
+
+
+def summarize(vs, cells):
+    rows = []
+    for v in vs:
+        for scope in ("SV", "SM", "both"):
+            rungs = [r for r, s in UNSAFE.items() if scope in (s, "both")]
+
+            def count(pt, x):
+                return sum(cells[(v.name, cond, rung, pt, x)] for cond in CONDITIONS for rung in rungs)
+
+            tp, fn, fp = count("cross_boundary", "tp"), count("cross_boundary", "fn"), count("cross_boundary", "fp")
+            n_trap = sum(count("cross_boundary", x) for x in ("INVALID", "SAFE", "ABSTAIN"))
+            n_sup = sum(count("supported", x) for x in ("INVALID", "SAFE", "ABSTAIN"))
+            sup_flagged, sup_accepted = count("supported", "INVALID"), count("supported", "SAFE")
+            trap_abstain = count("cross_boundary", "ABSTAIN")
+            row = {"variant": v.name, "rung": scope}
+            for metric, k, n in (("recall", tp, tp + fn), ("precision", tp, tp + fp),
+                                 ("fp_sup", sup_flagged, n_sup), ("acc_sup", sup_accepted, n_sup)):
+                lo, hi = wilson_ci(k, n)
+                row.update({metric: k / n if n else 0.0, f"{metric}_lo": lo, f"{metric}_hi": hi})
+            row.update({"trap_abstain": trap_abstain / n_trap, "tp": tp, "fn": fn, "fp": fp, "n_trap": n_trap,
+                        "n_sup": n_sup, "sup_flagged": sup_flagged, "sup_accepted": sup_accepted})
+            rows.append(row)
+    path = HERE / "bcesv_summary.csv"
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: (round(x, 4) if isinstance(x, float) else x) for k, x in r.items()})
+    return path, rows
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Table 2, Figure 6 and Appendix D.")
+    ap.add_argument("data_dir", nargs="?", type=Path, default=HERE.parent / "data")
+    args = ap.parse_args()
+    vs, cells = run(args.data_dir)
+    path, n = write_results(vs, cells)
+    print(f"wrote {path.name} ({n} rows)")
+    path, rows = summarize(vs, cells)
+    print(f"wrote {path.name} ({len(rows)} rows)")
+
+    print("\nTable 2 and Appendix D: unsafe rungs, pooled over the 12 conditions")
+    print(f"{'variant':24s} {'rung':4s} {'recall':>7s} {'prec':>7s} {'fp_sup':>7s} {'acc_sup':>8s} {'trap_abst':>9s}")
+    for r in rows:
+        print(f"{r['variant']:24s} {r['rung']:4s} {100 * r['recall']:6.1f}% {100 * r['precision']:6.1f}% "
+              f"{100 * r['fp_sup']:6.1f}% {100 * r['acc_sup']:7.1f}% {100 * r['trap_abstain']:8.1f}%")
+
+    print("\nFigure 6: shared-vector rung, BcesvExact (p = 0) and BcesvNoisy(p)")
+    by_name = {(r["variant"], r["rung"]): r for r in rows}
+    for p, name in ((0, "BcesvExact"), (10, "BcesvNoisy(10%)"), (20, "BcesvNoisy(20%)"), (30, "BcesvNoisy(30%)")):
+        r = by_name[(name, "SV")]
+        print(f"  p = {p:2d}%: recall {100 * r['recall']:5.1f}%, precision {100 * r['precision']:5.1f}%, "
+              f"supported accepted {100 * r['acc_sup']:5.1f}%")
+
+    print()
+    for rung in ("SV", "SM"):
+        r = by_name[("FragmentOnly", rung)]
+        print(f"FragmentOnly, {rung}: {r['tp'] + r['fp']} of the {r['n_trap']} trap responses flagged INVALID")
+    print(f"The cohesion rule of BcesvReconstruct links two fragments with the same tenant, timestamps at most {RECON_TIME_WINDOW_SEC} s "
+          f"apart, an entity-set Jaccard of at least {RECON_ENTITY_JACCARD}, and the same log source or incident "
+          "template; its groups are the connected components of these links")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        base = Path(sys.argv[1])
-    else:
-        # Default: ../data relative to this script's location
-        base = Path(__file__).resolve().parent.parent / "data"
-        print(f"No path given. Defaulting to {base}", flush=True)
-    if not base.exists():
-        raise SystemExit(
-            f"ERROR: data path does not exist: {base}\n"
-            f"Usage: python3 bcesv_run_all.py <path-to-data-dir>\n"
-            f"From the bcesv/ directory: python3 bcesv_run_all.py ../data"
-        )
-    # Count condition dirs (must have responses.jsonl)
-    cond_dirs = [d for d in base.iterdir()
-                 if d.is_dir() and (d / "responses.jsonl").exists()]
-    if not cond_dirs:
-        raise SystemExit(
-            f"ERROR: no condition directories found under {base}\n"
-            f"Expected: <data>/<condition>/responses.jsonl\n"
-            f"Usage: python3 bcesv_run_all.py <path-to-data-dir>\n"
-            f"From the bcesv/ directory: python3 bcesv_run_all.py ../data"
-        )
-    print(f"Found {len(cond_dirs)} condition directories.", flush=True)
-    main(base)
+    main()

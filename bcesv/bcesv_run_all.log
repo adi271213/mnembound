@@ -1,0 +1,51 @@
+wrote bcesv_results.csv (1152 rows)
+wrote bcesv_summary.csv (36 rows)
+
+Table 2 and Appendix D: unsafe rungs, pooled over the 12 conditions
+variant                  rung  recall    prec  fp_sup  acc_sup trap_abst
+FragmentOnly             SV    100.0%   99.7%  100.0%     0.0%      0.2%
+FragmentOnly             SM    100.0%   99.4%  100.0%     0.0%      0.8%
+FragmentOnly             both  100.0%   99.6%  100.0%     0.0%      0.5%
+BcesvExact               SV    100.0%  100.0%    0.0%    96.5%      0.3%
+BcesvExact               SM    100.0%  100.0%    0.0%    33.8%      1.3%
+BcesvExact               both  100.0%  100.0%    0.0%    65.1%      0.8%
+BcesvNoisy(10%)          SV     99.4%  100.0%    0.0%    55.8%      1.0%
+BcesvNoisy(10%)          SM     98.6%  100.0%    0.0%    19.2%      2.8%
+BcesvNoisy(10%)          both   99.0%  100.0%    0.0%    37.5%      1.9%
+BcesvNoisy(20%)          SV     96.6%  100.0%    0.0%    29.8%      3.8%
+BcesvNoisy(20%)          SM     94.3%  100.0%    0.0%    12.8%      7.0%
+BcesvNoisy(20%)          both   95.5%  100.0%    0.0%    21.3%      5.4%
+BcesvNoisy(30%)          SV     94.6%  100.0%    0.0%    16.9%      5.8%
+BcesvNoisy(30%)          SM     89.2%  100.0%    0.0%     7.5%     12.0%
+BcesvNoisy(30%)          both   91.9%  100.0%    0.0%    12.2%      8.9%
+BcesvReconstruct         SV    100.0%   99.7%    0.0%    96.5%      0.2%
+BcesvReconstruct         SM    100.0%   99.4%    0.0%    33.8%      0.8%
+BcesvReconstruct         both  100.0%   99.6%    0.0%    65.1%      0.5%
+BcesvRecon[no_tenant]    SV    100.0%   99.7%    0.0%    96.5%      0.2%
+BcesvRecon[no_tenant]    SM    100.0%   99.4%    0.0%    33.8%      0.8%
+BcesvRecon[no_tenant]    both  100.0%   99.6%    0.0%    65.1%      0.5%
+BcesvRecon[no_time]      SV    100.0%   99.7%    0.0%    96.5%      0.2%
+BcesvRecon[no_time]      SM    100.0%   99.4%    0.0%    33.8%      0.8%
+BcesvRecon[no_time]      both  100.0%   99.6%    0.0%    65.1%      0.5%
+BcesvRecon[no_entity]    SV    100.0%   99.7%    0.0%    96.5%      0.2%
+BcesvRecon[no_entity]    SM    100.0%   99.4%    0.0%    33.8%      0.8%
+BcesvRecon[no_entity]    both  100.0%   99.6%    0.0%    65.1%      0.5%
+BcesvRecon[no_logsrc]    SV    100.0%   99.7%    0.0%    96.5%      0.2%
+BcesvRecon[no_logsrc]    SM    100.0%   99.4%    0.0%    33.8%      0.8%
+BcesvRecon[no_logsrc]    both  100.0%   99.6%    0.0%    65.1%      0.5%
+BcesvRecon[no_template]  SV    100.0%   99.7%    0.0%    96.5%      0.2%
+BcesvRecon[no_template]  SM    100.0%   99.4%    0.0%    33.8%      0.8%
+BcesvRecon[no_template]  both  100.0%   99.6%    0.0%    65.1%      0.5%
+BcesvExact[casefold]     SV    100.0%  100.0%    0.0%    96.8%      0.2%
+BcesvExact[casefold]     SM    100.0%  100.0%    0.0%    90.0%      0.8%
+BcesvExact[casefold]     both  100.0%  100.0%    0.0%    93.4%      0.5%
+
+Figure 6: shared-vector rung, BcesvExact (p = 0) and BcesvNoisy(p)
+  p =  0%: recall 100.0%, precision 100.0%, supported accepted  96.5%
+  p = 10%: recall  99.4%, precision 100.0%, supported accepted  55.8%
+  p = 20%: recall  96.6%, precision 100.0%, supported accepted  29.8%
+  p = 30%: recall  94.6%, precision 100.0%, supported accepted  16.9%
+
+FragmentOnly, SV: 1197 of the 1200 trap responses flagged INVALID
+FragmentOnly, SM: 1191 of the 1200 trap responses flagged INVALID
+The cohesion rule of BcesvReconstruct links two fragments with the same tenant, timestamps at most 600 s apart, an entity-set Jaccard of at least 0.5, and the same log source or incident template; its groups are the connected components of these links

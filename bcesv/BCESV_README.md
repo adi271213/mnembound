@@ -1,64 +1,39 @@
-# BCESV — Boundary-Constrained Event-Source Verifier
+# BCESV: Boundary-Constrained Event-Source Verifier
 
-BCESV is a post-hoc verifier that checks whether the components of a
-model's recall response actually trace to a coherent set of fragments
-from a single boundary, or whether they were stitched across multiple
-boundaries (the cross-boundary trap pattern documented in §7).
+Post-hoc verification of agent recalls (§8 of the paper). For each response a verifier sees the recall and the provenance handles of the retrieved fragments, and returns INVALID, SAFE or ABSTAIN.
+
+## Decision procedure (Algorithm 1)
+
+1. For each recall component, find the retrieved fragments that supply it (the matching rule of the HARDENED scorer: the component equals the fragment's value, contains it, or occurs in the fragment's text).
+2. Resolve each supplying handle to a group; a handle the resolver cannot resolve is unresolved.
+3. INVALID if the resolved handles fall into two or more groups.
+4. Otherwise ABSTAIN if a component has no supplying fragment, a handle is unresolved, or no handle resolved.
+5. Otherwise SAFE.
+
+A response without a recall (abstention or parse failure) is ABSTAIN.
 
 ## Variants
 
-| Variant | Description |
+| Variant | Group of a handle |
 |---|---|
-| FragmentOnly | Opaque provenance handles only (no resolver). Baseline. |
-| BcesvExact | Trusted resolver, exact-match verification. Upper bound. |
-| BcesvNoisy@10/20/30 | Drop noise simulation; fails-open to ABSTAIN. |
-| BcesvReconstruct | R3 feature clustering, no trusted resolver. |
-| (five single-feature ablations) | per-feature contribution analysis |
+| `FragmentOnly` | the handle itself (no resolver) |
+| `BcesvExact` | the boundary (tenant) of its fragment, from a trusted resolver |
+| `BcesvNoisy(p)` | as `BcesvExact`, but each handle is unresolved with probability p, decided by a SHA-256 hash of the seed and the handle |
+| `BcesvReconstruct` | its cluster under the cohesion rule, which links two fragments that share a tenant, have timestamps at most 600 s apart, have an entity-set Jaccard of at least 0.5, and share a log source or an incident template; clusters are the connected components of these links, so one cluster can span more than 600 s; boundary and event labels are never read |
 
-## How to run
+`BcesvRecon[no_<feature>]` drops one feature of the cohesion rule (Appendix D). `BcesvExact[casefold]` is `BcesvExact` with matching that ignores letter case; it gives the 93.4% acceptance of supported recalls quoted in §8. Ground truth is the HARDENED scorer at tenant granularity (`ground_truth_boundary_invalid`); `analysis/paper_numbers.py` checks that it agrees with `analysis/rescore_final_ci.py` on all 14,400 responses.
+
+## Running
 
 ```bash
-cd bcesv
-python3 test_bcesv.py                              # smoke test
-python3 bcesv_run_all.py ../data | tee bcesv_run_all.log
+python3 bcesv/test_bcesv.py
+python3 bcesv/bcesv_run_all.py > bcesv/bcesv_run_all.log
 ```
 
-The `../data` argument is required. The script reads each
-`data/<condition>/{fragments.store.jsonl, probes.jsonl, responses.jsonl}`
-and writes:
+The 16 unit tests cover the matching rule, the decision order (an unsupported component or an unresolved handle never yields SAFE; two resolved handles in different groups yield INVALID even when another handle is unresolved), deterministic noise, the cohesion rule of `BcesvReconstruct`, its independence from boundary and event labels, and the variant names. The driver uses only the standard library.
 
-- `bcesv_results.csv` — 1,057 rows (11 variants × 12 conditions × rungs)
-- `bcesv_summary.csv` — 89 rows (variant × rung pooled)
+## Outputs
 
-Reproducibility: the released CSVs have MD5 checksums:
+`bcesv_results.csv` has one row per variant, condition, rung and probe type (cross-boundary and supported): confusion counts against the ground truth (`tp`, `fp`, `fn`, `tn`), verdict counts (`invalid`, `safe`, `abstain`) and parse failures, which are excluded from the metrics.
 
-| File | MD5 |
-|---|---|
-| `bcesv_results.csv` | `313d17510c142ccea8917f9666447e8e` |
-| `bcesv_summary.csv` | `861b8ab75fc941eb7a8a37ab761d7bb0` |
-
-A fresh run of `bcesv_run_all.py ../data` produces bit-for-bit identical
-CSVs (matching MD5s).
-
-## Headline numbers (paper Table 2, SV rung)
-
-| Variant | Recall | Precision | FPR (supported) |
-|---|---|---|---|
-| FragmentOnly | 100.0% | 99.7% | 100.0% |
-| BcesvExact | 100.0% | 100.0% | 0.0% |
-| BcesvNoisy(30%) SV | 19.0% | 100.0% | 0.0% |
-| BcesvNoisy(30%) SM | 23.3% | 100.0% | 0.0% |
-
-FragmentOnly flags every supported recall as positive (FPR = 100%),
-confirming Theorem 1 empirically: opaque-handle-only verifiers cannot
-achieve nontrivial precision and recall simultaneously.
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `bcesv.py` | Verifier library (StoreEntry, BCESV classes, variants) |
-| `bcesv_run_all.py` | Driver — loads all 12 conditions, writes both CSVs |
-| `test_bcesv.py` | Smoke test on synthetic mini-corpus |
-| `bcesv_results.csv` | Precomputed per-condition results |
-| `bcesv_summary.csv` | Precomputed variant×rung summary |
+`bcesv_summary.csv` has one row per variant on the shared-vector rung (`SV`), the summary-merge rung (`SM`) and both pooled (`both`): `recall` and `precision` on cross-boundary probes, `fp_sup` and `acc_sup` (the shares of supported recalls flagged INVALID and accepted as SAFE), each with Wilson 95% bounds (`_lo`, `_hi`), `trap_abstain` (the share of cross-boundary responses on which the verifier abstains) and the counts behind them. Table 2 reports the `SV` and `SM` rows of the first six variants; Figure 6 plots `BcesvExact` (p = 0) and `BcesvNoisy(p)` on `SV`; `bcesv_run_all.log` prints both, followed by the number of trap responses that `FragmentOnly` flags INVALID on each rung and the thresholds of the cohesion rule of `BcesvReconstruct`.

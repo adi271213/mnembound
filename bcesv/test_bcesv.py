@@ -1,168 +1,180 @@
 """
-test_bcesv.py — smoke test for the BCESV verifier logic.
+Unit tests for the BCESV decision procedure (Algorithm 1) on a synthetic store.
 
-Builds a tiny synthetic dataset (5 fragments across 3 boundaries) and
-checks that each verifier variant produces the expected verdicts.
-
-Run with:  python3 test_bcesv.py
+Run from the repository root:
+  python3 bcesv/test_bcesv.py
 """
-from bcesv import (
-    StoreEntry, FragmentOnly, BcesvExact, BcesvNoisy, BcesvReconstruct,
-    ground_truth_boundary_invalid, all_supplying,
-)
+from dataclasses import replace
+
+from bcesv import (BcesvExact, BcesvNoisy, BcesvReconstruct, FragmentOnly, StoreEntry,
+                   ground_truth_boundary_invalid, ground_truth_event_invalid, supplying_provenance_ids)
+
+EVENT_A = {"subject": "user:u_a", "action": "login_succeeded", "object": "host:h_a1",
+           "outcome": "allowed", "time": "2026-04-01T10:00:00+00:00"}
+EVENT_B = {"subject": "user:u_b", "action": "file_downloaded", "object": "ip:10.0.0.42"}
 
 
-def make_store():
-    """Three fragments from one event in boundary b-A, two from a
-    different event in boundary b-B."""
-    return {
-        "prov:A1": StoreEntry(
-            role="subject", value="user:alice@A", sanitized_value="user:u_a",
-            text="Authentication by user:alice@A", sanitized_text="Authentication by user:u_a",
-            public_provenance_id="prov:A1",
-            record_id="r-A-1", boundary_id="b-A", event_id="e-A-1",
-            tenant_id="tenant-A",
-            timestamp="2026-03-10T10:00:00+00:00",
-            log_source="edr:Crowdstrike", incident_template="auth_v1",
-            entity_set=("user:alice@A", "host:wsA-01")),
-        "prov:A2": StoreEntry(
-            role="action", value="logged_in", sanitized_value="logged_in",
-            text="logged in successfully", sanitized_text="logged in successfully",
-            public_provenance_id="prov:A2",
-            record_id="r-A-1", boundary_id="b-A", event_id="e-A-1",
-            tenant_id="tenant-A",
-            timestamp="2026-03-10T10:00:05+00:00",
-            log_source="edr:Crowdstrike", incident_template="auth_v1",
-            entity_set=("user:alice@A", "host:wsA-01")),
-        "prov:A3": StoreEntry(
-            role="object", value="host:wsA-01", sanitized_value="host:wsA-01",
-            text="on host:wsA-01", sanitized_text="on host:wsA-01",
-            public_provenance_id="prov:A3",
-            record_id="r-A-1", boundary_id="b-A", event_id="e-A-1",
-            tenant_id="tenant-A",
-            timestamp="2026-03-10T10:00:10+00:00",
-            log_source="edr:Crowdstrike", incident_template="auth_v1",
-            entity_set=("user:alice@A", "host:wsA-01")),
-        "prov:B1": StoreEntry(
-            role="action", value="downloaded_file", sanitized_value="downloaded_file",
-            text="downloaded file from", sanitized_text="downloaded file from",
-            public_provenance_id="prov:B1",
-            record_id="r-B-1", boundary_id="b-B", event_id="e-B-1",
-            tenant_id="tenant-B",
-            timestamp="2026-04-01T15:30:00+00:00",
-            log_source="ngfw:Palo", incident_template="dlp_v2",
-            entity_set=("user:bob@B", "ip:10.0.0.42")),
-        "prov:B2": StoreEntry(
-            role="object", value="ip:10.0.0.42", sanitized_value="ip:10.0.0.42",
-            text="ip:10.0.0.42", sanitized_text="ip:10.0.0.42",
-            public_provenance_id="prov:B2",
-            record_id="r-B-1", boundary_id="b-B", event_id="e-B-1",
-            tenant_id="tenant-B",
-            timestamp="2026-04-01T15:30:02+00:00",
-            log_source="ngfw:Palo", incident_template="dlp_v2",
-            entity_set=("user:bob@B", "ip:10.0.0.42")),
-    }
+def entry(pid, role, value, tenant, clock, entities, log_source="edr:X", template="tpl_a"):
+    return StoreEntry(role=role, value=value, sanitized_value=value, text=f"{role} {value}",
+                      sanitized_text=f"{role} {value}", public_provenance_id=pid, record_id=f"r-{tenant}",
+                      boundary_id=f"b-{tenant}", event_id=f"e-{tenant}", tenant_id=f"client{tenant}",
+                      timestamp=f"2026-04-01T{clock}+00:00", log_source=log_source,
+                      incident_template=template, entity_set=tuple(entities))
 
 
-def case_safe_recall():
-    """Recall composed only from boundary b-A — should be SAFE."""
-    return {
-        "probe_id": "test-safe",
-        "probe_type": "supported",
-        "rung": "shared_vector_index",
-        "abstained": False,
-        "value_view": "tenant_hidden",
-        "fragment_provenance_ids": ["prov:A1", "prov:A2", "prov:A3", "prov:B1", "prov:B2"],
-        "recall": {
-            "subject": "user:u_a",
-            "action": "logged in successfully",
-            "object": "host:wsA-01",
-            "outcome": "",
-            "time": "",
-        },
-    }
+STORE = {
+    **{f"prov:A{i}": entry(f"prov:A{i}", role, value, "A", f"10:00:{10 * i:02d}", ("user:u_a", "host:h_a1"))
+       for i, (role, value) in enumerate(EVENT_A.items())},
+    **{f"prov:B{i}": entry(f"prov:B{i}", role, value, "B", f"15:30:{10 * i:02d}", ("user:u_b", "ip:10.0.0.42"),
+                           log_source="fw:Y", template="tpl_b")
+       for i, (role, value) in enumerate(EVENT_B.items())},
+}
+RETRIEVED = sorted(STORE)
 
 
-def case_invalid_recall():
-    """Recall composes across b-A and b-B — should be INVALID."""
-    return {
-        "probe_id": "test-invalid",
-        "probe_type": "cross_boundary",
-        "rung": "shared_vector_index",
-        "abstained": False,
-        "value_view": "tenant_hidden",
-        "fragment_provenance_ids": ["prov:A1", "prov:A2", "prov:A3", "prov:B1", "prov:B2"],
-        "recall": {
-            "subject": "user:u_a",       # from b-A
-            "action": "downloaded_file",  # from b-B
-            "object": "ip:10.0.0.42",     # from b-B
-            "outcome": "",
-            "time": "",
-        },
-    }
+def response(recall, abstained=False):
+    return {"probe_id": "t", "probe_type": "cross_boundary", "rung": "shared_vector_index",
+            "abstained": abstained, "value_view": "tenant_hidden",
+            "fragment_provenance_ids": RETRIEVED, "recall": None if abstained else recall}
 
 
-def case_abstained():
-    return {
-        "probe_id": "test-abstain",
-        "probe_type": "absent",
-        "rung": "shared_vector_index",
-        "abstained": True,
-        "value_view": "tenant_hidden",
-        "fragment_provenance_ids": ["prov:A1"],
-        "recall": None,
-    }
+COMPLETE_A = response(dict(EVENT_A))
+CROSS = response({**EVENT_A, "action": EVENT_B["action"], "object": EVENT_B["object"]})
+PARTIAL_A = response({**EVENT_A, "outcome": "", "time": ""})
+CROSS_PARTIAL = response({"subject": EVENT_A["subject"], "action": EVENT_B["action"],
+                          "object": "", "outcome": "", "time": ""})
+ABSTAINED = response(None, abstained=True)
+GROUPING = (BcesvExact(), BcesvNoisy(0.0), BcesvReconstruct())  # variants whose groups can hold several handles
 
 
-def run():
-    store = make_store()
-    cases = {
-        "safe (single-boundary)": case_safe_recall(),
-        "invalid (cross-boundary)": case_invalid_recall(),
-        "abstained": case_abstained(),
-    }
+class FixedResolver(BcesvExact):
+    """BcesvExact whose resolver fails on a given set of handles."""
 
-    print()
-    print(f"{'verifier':28s} | {'safe':12s} | {'invalid':12s} | {'abstained':12s}")
-    print("-" * 80)
-    verifiers = [
-        FragmentOnly(),
-        BcesvExact(),
-        BcesvNoisy(0.0, seed=1),
-        BcesvNoisy(0.3, seed=1),
-        BcesvReconstruct(),
-    ]
-    expected = {
-        "FragmentOnly":         ("INVALID", "INVALID", "ABSTAIN"),
-        "BcesvExact":           ("SAFE",    "INVALID", "ABSTAIN"),
-        "BcesvNoisy(0%)":       ("SAFE",    "INVALID", "ABSTAIN"),
-        "BcesvNoisy(30%)":      ("ANY",     "ANY",     "ABSTAIN"),
-        "BcesvReconstruct":     ("SAFE",    "INVALID", "ABSTAIN"),
-    }
-    fails = 0
-    for v in verifiers:
-        results = [v.predict(c, store) for c in cases.values()]
-        print(f"{v.name:28s} | "
-              f"{results[0]:12s} | {results[1]:12s} | {results[2]:12s}")
-        exp = expected.get(v.name)
-        if exp:
-            for got, want in zip(results, exp):
-                if want != "ANY" and got != want:
-                    print(f"  FAIL: {v.name}: expected {want}, got {got}")
-                    fails += 1
+    def __init__(self, unresolved):
+        super().__init__()
+        self.unresolved = set(unresolved)
 
-    print()
-    print(f"ground truth (boundary-invalid):")
-    for label, c in cases.items():
-        gt = ground_truth_boundary_invalid(c, store)
-        print(f"  {label}: gt_invalid={gt}")
+    def is_unresolved(self, pid):
+        return pid in self.unresolved
 
-    print()
-    if fails == 0:
-        print("✓ All expected verdicts match.")
-    else:
-        print(f"✗ {fails} mismatches.")
+
+def test_supplying_rule():
+    pids = RETRIEVED
+    assert supplying_provenance_ids("user:u_a", STORE, pids, "tenant_hidden") == {"prov:A0"}
+    assert supplying_provenance_ids("seen user:u_a today", STORE, pids, "tenant_hidden") == {"prov:A0"}
+    assert supplying_provenance_ids("action login_succ", STORE, pids, "tenant_hidden") == {"prov:A1"}
+    assert supplying_provenance_ids("   ", STORE, pids, "tenant_hidden") == set()
+    assert supplying_provenance_ids("USER:U_A", STORE, pids, "tenant_hidden") == set()
+    assert supplying_provenance_ids("USER:U_A", STORE, pids, "tenant_hidden", casefold=True) == {"prov:A0"}
+
+
+def test_ground_truth():
+    assert not ground_truth_boundary_invalid(COMPLETE_A, STORE)
+    assert ground_truth_boundary_invalid(CROSS, STORE)
+    assert not ground_truth_event_invalid(COMPLETE_A, STORE)
+    assert ground_truth_event_invalid(CROSS, STORE)
+    assert not ground_truth_boundary_invalid(ABSTAINED, STORE)
+
+
+def test_fully_supported_single_boundary_recall_is_safe():
+    for v in GROUPING:
+        assert v.predict(COMPLETE_A, STORE) == "SAFE", v.name
+
+
+def test_cross_boundary_recall_is_invalid():
+    for v in GROUPING + (FragmentOnly(),):
+        assert v.predict(CROSS, STORE) == "INVALID", v.name
+
+
+def test_unsupported_component_is_never_safe():
+    for v in GROUPING:
+        assert v.predict(PARTIAL_A, STORE) == "ABSTAIN", v.name
+
+
+def test_invalid_takes_precedence_over_unsupported_component():
+    for v in GROUPING:
+        assert v.predict(CROSS_PARTIAL, STORE) == "INVALID", v.name
+
+
+def test_unresolved_handle_does_not_mask_disagreement():
+    assert FixedResolver({"prov:A0"}).predict(CROSS, STORE) == "INVALID"
+
+
+def test_unresolved_handle_blocks_acceptance():
+    assert FixedResolver({"prov:A3"}).predict(COMPLETE_A, STORE) == "ABSTAIN"
+
+
+def test_nothing_resolved_abstains():
+    always_unresolved = BcesvNoisy(1.0)
+    assert always_unresolved.predict(COMPLETE_A, STORE) == "ABSTAIN"
+    assert always_unresolved.predict(CROSS, STORE) == "ABSTAIN"
+
+
+def test_noise_is_deterministic_per_seed_and_handle():
+    handles = [f"prov:{i:06d}" for i in range(20000)]
+    a, b, c = BcesvNoisy(0.3, seed=7), BcesvNoisy(0.3, seed=7), BcesvNoisy(0.3, seed=8)
+    drops_a = [a.is_unresolved(p) for p in handles]
+    assert drops_a == [b.is_unresolved(p) for p in handles]
+    assert drops_a != [c.is_unresolved(p) for p in handles]
+    assert 0.29 < sum(drops_a) / len(handles) < 0.31
+    assert not any(BcesvNoisy(0.0).is_unresolved(p) for p in handles)
+
+
+def test_fragment_only_cannot_certify_a_multi_fragment_recall():
+    assert FragmentOnly().predict(COMPLETE_A, STORE) == "INVALID"
+
+
+def test_case_insensitive_matching():
+    upper = response({**EVENT_A, "subject": EVENT_A["subject"].upper()})
+    assert BcesvExact().predict(upper, STORE) == "ABSTAIN"
+    assert BcesvExact(casefold=True).predict(upper, STORE) == "SAFE"
+
+
+def test_response_without_recall_abstains():
+    for v in GROUPING + (FragmentOnly(),):
+        assert v.predict(ABSTAINED, STORE) == "ABSTAIN", v.name
+
+
+def test_reconstruct_cohesion_rule():
+    a = entry("x1", "subject", "user:u_a", "A", "10:00:00", ("e1", "e2"))
+    rec = BcesvReconstruct()
+    assert rec.same_event(a, replace(a, timestamp="2026-04-01T10:10:00+00:00"))
+    late = replace(a, timestamp="2026-04-01T10:10:01+00:00")
+    assert not rec.same_event(a, late)
+    assert BcesvReconstruct(use_time=False).same_event(a, late)
+    other_tenant = replace(a, tenant_id="clientB")
+    assert not rec.same_event(a, other_tenant)
+    assert BcesvReconstruct(use_tenant=False).same_event(a, other_tenant)
+    assert rec.same_event(a, replace(a, entity_set=("e1", "e2", "e3", "e4")))  # Jaccard 0.5
+    assert not rec.same_event(a, replace(a, entity_set=("e1", "e3", "e4")))  # Jaccard 0.25
+    assert BcesvReconstruct(use_entity_set=False).same_event(a, replace(a, entity_set=("e9",)))
+    assert rec.same_event(a, replace(a, log_source="fw:Y"))
+    assert rec.same_event(a, replace(a, incident_template="tpl_b"))
+    assert not rec.same_event(a, replace(a, log_source="fw:Y", incident_template="tpl_b"))
+    assert not BcesvReconstruct(use_log_source=False).same_event(a, replace(a, incident_template="tpl_b"))
+    assert not BcesvReconstruct(use_template=False).same_event(a, replace(a, log_source="fw:Y"))
+
+
+def test_reconstruct_never_reads_boundary_or_event_labels():
+    scrambled = {p: replace(e, boundary_id=f"b-{i}", event_id=f"e-{i}") for i, (p, e) in enumerate(STORE.items())}
+    rec = BcesvReconstruct()
+    for resp in (COMPLETE_A, CROSS, PARTIAL_A, CROSS_PARTIAL):
+        assert rec.predict(resp, scrambled) == rec.predict(resp, STORE)
+    assert BcesvExact().predict(COMPLETE_A, scrambled) == "INVALID"
+
+
+def test_variant_names():
+    names = [v.name for v in (FragmentOnly(), BcesvExact(), BcesvNoisy(0.1), BcesvNoisy(0.2), BcesvNoisy(0.3),
+                              BcesvReconstruct(), BcesvReconstruct(use_tenant=False),
+                              BcesvReconstruct(use_time=False), BcesvReconstruct(use_entity_set=False),
+                              BcesvReconstruct(use_log_source=False), BcesvReconstruct(use_template=False))]
+    assert names == ["FragmentOnly", "BcesvExact", "BcesvNoisy(10%)", "BcesvNoisy(20%)", "BcesvNoisy(30%)",
+                     "BcesvReconstruct", "BcesvRecon[no_tenant]", "BcesvRecon[no_time]", "BcesvRecon[no_entity]",
+                     "BcesvRecon[no_logsrc]", "BcesvRecon[no_template]"]
 
 
 if __name__ == "__main__":
-    run()
+    tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
+    for t in tests:
+        t()
+    print(f"{len(tests)} tests passed")
