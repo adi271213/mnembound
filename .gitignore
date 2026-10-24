@@ -7,25 +7,24 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+.pytest_cache/
 
-# LaTeX build artefacts
+# Virtual environments
+.venv/
+venv/
+env/
+
+# LaTeX build files
 paper/*.aux
 paper/*.bbl
 paper/*.blg
 paper/*.log
 paper/*.out
+paper/*.fls
+paper/*.fdb_latexmk
 paper/*.synctex.gz
 
-# Analysis logs (regenerable from data + scripts)
-analysis/*.log
-bcesv/*.log
-
-# Local virtual environments
-venv/
-.venv/
-env/
-
-# Editor
+# Editors
 .vscode/
 .idea/
 *.swp

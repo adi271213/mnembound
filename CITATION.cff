@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this artifact, please cite the paper."
+title: "MnemBound: Fragment-Faithful, Event-False Recall in Multi-Tenant Agent Memory (artifact)"
+type: software
+authors:
+  - given-names: Aditya
+    family-names: Jain
+    affiliation: University of Warwick
+  - given-names: Anmol
+    family-names: Pandey
+    affiliation: University of Warwick
+  - given-names: Liang
+    family-names: Chen
+    affiliation: University of Hertfordshire
+repository-code: "https://github.com/adi271213/mnembound"
+license: Apache-2.0
+version: "1.0.0"
+preferred-citation:
+  type: conference-paper
+  title: "MnemBound: Fragment-Faithful, Event-False Recall in Multi-Tenant Agent Memory"
+  authors:
+    - given-names: Aditya
+      family-names: Jain
+      affiliation: University of Warwick
+    - given-names: Anmol
+      family-names: Pandey
+      affiliation: University of Warwick
+    - given-names: Liang
+      family-names: Chen
+      affiliation: University of Hertfordshire
+  collection-title: "Proceedings of the Annual Computer Security Applications Conference (ACSAC)"
+  year: 2026

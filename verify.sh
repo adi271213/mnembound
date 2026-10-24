@@ -1,111 +1,47 @@
 #!/usr/bin/env bash
-# verify.sh — sanity check the repo structure
-set -e
+# Checks the release: the set of files and every file's SHA-256 against
+# MANIFEST.sha256, and the size of every condition in data/. Exits non-zero
+# on any mismatch.
+set -euo pipefail
+cd "$(dirname "$0")"
 
-REPO="$(cd "$(dirname "$0")" && pwd)"
-cd "$REPO"
+status=0
+fail() { echo "FAIL: $*"; status=1; }
 
-echo "==> Verifying MnemBound repository structure"
-echo ""
+expected=$(cut -c67- MANIFEST.sha256)
+actual=$(./generate_manifest.sh --list)
+missing=$(LC_ALL=C comm -23 <(echo "$expected") <(echo "$actual"))
+extra=$(LC_ALL=C comm -13 <(echo "$expected") <(echo "$actual"))
+[[ -z "$missing" ]] || fail "listed in MANIFEST.sha256 but missing: $(echo $missing)"
+[[ -z "$extra" ]] || fail "present but not listed in MANIFEST.sha256: $(echo $extra)"
 
-# 1. Top-level
-for f in README.md REPRODUCE.md LICENSE requirements.txt MANIFEST.sha256; do
-    if [[ -f "$f" ]]; then
-        echo "  [ok] $f"
-    else
-        echo "  [MISSING] $f"
-    fi
+if command -v sha256sum >/dev/null 2>&1; then sha=(sha256sum); else sha=(shasum -a 256); fi
+if ! "${sha[@]}" -c --quiet MANIFEST.sha256; then
+    fail "files whose SHA-256 differs from MANIFEST.sha256 are listed above"
+fi
+echo "manifest: $(wc -l < MANIFEST.sha256 | tr -d ' ') files checked"
+
+lines() { wc -l < "$1" | tr -d ' '; }
+conditions=(data/*/)
+[[ ${#conditions[@]} -eq 12 ]] || fail "expected 12 conditions in data/, found ${#conditions[@]}"
+for c in "${conditions[@]}"; do
+    c=${c%/}
+    for f in corpus.json corpus_stats.json fragments.store.jsonl probes.jsonl responses.jsonl rung_stats.jsonl; do
+        [[ -f "$c/$f" ]] || fail "$c/$f is missing"
+    done
+    [[ -f "$c/responses.jsonl" && $(lines "$c/responses.jsonl") -eq 1200 ]] || fail "$c: expected 1200 responses"
+    [[ -f "$c/probes.jsonl" && $(lines "$c/probes.jsonl") -eq 300 ]] || fail "$c: expected 300 probes"
+    [[ -f "$c/fragments.store.jsonl" && $(lines "$c/fragments.store.jsonl") -eq 25000 ]] || fail "$c: expected 25000 fragments"
+    [[ -f "$c/rung_stats.jsonl" && $(lines "$c/rung_stats.jsonl") -eq 4 ]] || fail "$c: expected 4 rung summaries"
+    for t in supported:100 cross_boundary:100 absent:50 partial:50; do
+        n=$(grep -c "\"probe_type\": \"${t%%:*}\"" "$c/probes.jsonl" || true)
+        [[ "$n" -eq "${t##*:}" ]] || fail "$c: expected ${t##*:} ${t%%:*} probes, found $n"
+    done
 done
+echo "data: ${#conditions[@]} conditions checked"
 
-# 2. Directories
-for d in data analysis bcesv mnembound paper; do
-    if [[ -d "$d" ]]; then
-        echo "  [ok] $d/"
-    else
-        echo "  [MISSING] $d/"
-    fi
-done
-
-# 3. Conditions
-echo ""
-echo "==> Conditions:"
-n_cond=$(ls -d data/*/ 2>/dev/null | wc -l | tr -d ' ')
-echo "    found $n_cond (expected 12)"
-for cond in data/*/; do
-    cond_name=$(basename "$cond")
-    if [[ -f "$cond/responses.jsonl" && -f "$cond/fragments.store.jsonl" && -f "$cond/probes.jsonl" ]]; then
-        n_resp=$(wc -l < "$cond/responses.jsonl" | tr -d ' ')
-        echo "  [ok] $cond_name (responses=$n_resp)"
-    else
-        echo "  [INCOMPLETE] $cond_name"
-    fi
-done
-
-# 4. Analysis scripts
-echo ""
-echo "==> Analysis scripts:"
-for s in rescore_final_ci.py scorer_sensitivity.py parse_fail_sensitivity.py \
-         qualitative_cases.py manual_scorer_audit.py audit_score.py; do
-    if [[ -f "analysis/$s" ]]; then
-        echo "  [ok] analysis/$s"
-    else
-        echo "  [MISSING] analysis/$s"
-    fi
-done
-
-# 5. BCESV
-echo ""
-echo "==> BCESV:"
-for s in bcesv.py bcesv_run_all.py test_bcesv.py bcesv_results.csv bcesv_summary.csv; do
-    if [[ -f "bcesv/$s" ]]; then
-        echo "  [ok] bcesv/$s"
-    else
-        echo "  [MISSING] bcesv/$s"
-    fi
-done
-
-# 6. Paper
-echo ""
-echo "==> Paper:"
-for f in main.tex references.bib main.pdf; do
-    if [[ -f "paper/$f" ]]; then
-        echo "  [ok] paper/$f"
-    else
-        echo "  [MISSING] paper/$f"
-    fi
-done
-
-# 7. Smoke test: load one condition's data
-echo ""
-echo "==> Smoke test: load one condition..."
-python3 -c "
-import json
-store = {}
-with open('data/qwen_full_neutral/fragments.store.jsonl') as f:
-    for line in f:
-        d = json.loads(line)
-        store[d['public_provenance_id']] = d
-print(f'  [ok] loaded {len(store)} fragments')
-
-with open('data/qwen_full_neutral/responses.jsonl') as f:
-    responses = [json.loads(line) for line in f]
-print(f'  [ok] loaded {len(responses)} responses')
-
-required_fragment_fields = ['boundary_id', 'sanitized_value', 'sanitized_text']
-sample = next(iter(store.values()))
-missing = [k for k in required_fragment_fields if k not in sample]
-if missing:
-    print(f'  [WARN] missing fragment fields: {missing}')
-else:
-    print(f'  [ok] all required fragment fields present')
-
-required_response_fields = ['recall', 'fragment_provenance_ids', 'probe_type', 'rung']
-missing = [k for k in required_response_fields if k not in responses[0]]
-if missing:
-    print(f'  [WARN] missing response fields: {missing}')
-else:
-    print(f'  [ok] all required response fields present')
-"
-
-echo ""
-echo "==> Verification complete."
+if [[ $status -ne 0 ]]; then
+    echo "verify.sh: FAILED"
+    exit 1
+fi
+echo "verify.sh: all checks passed"
